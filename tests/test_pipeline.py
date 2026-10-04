@@ -192,3 +192,22 @@ def test_longer_name_for_the_same_account_merges_but_other_types_stay_apart():
     merged = pipeline.merge(accounts)
     assert [account["institution"] for account in merged] == ["Fidelity Investments", "Chase Total Checking", "Chase Freedom"]
     assert merged[0]["evidence_ids"] == ["msg_1", "msg_2"]
+
+
+def test_welcome_to_a_plan_is_named_after_the_sender_not_the_plan():
+    def welcome(index, subject, sender):
+        return {"id": f"msg_{index:04d}", "from": sender, "subject": subject, "date": "2026-06-28",
+                "body": f"{subject}! Your subscription is active and renews monthly."}
+    found = pipeline.offline_extract([welcome(1, "Welcome to the Pro plan", "no-reply@mail.anthropic.com"),
+                                      welcome(2, "Welcome to ChatGPT Plus", "noreply@email.openai.com")])
+    assert sorted(account["institution"] for account in found) == ["Anthropic", "ChatGPT Plus"]
+
+
+def test_repeated_receipts_without_a_cycle_are_monthly():
+    def receipt(index, day, amount="20.00"):
+        return {"id": f"msg_{index:04d}", "from": "invoice@mail.anthropic.com", "subject": "Your receipt from Anthropic, PBC",
+                "date": day, "body": f"Receipt from Anthropic, PBC ${amount} Paid"}
+    found = pipeline.offline_extract([receipt(1, "2026-07-28"), receipt(2, "2026-08-28"), receipt(3, "2026-09-28")])
+    assert [(account["frequency"], len(account["_charges"])) for account in found] == [("monthly", 3)]
+    one = pipeline.offline_extract([receipt(4, "2026-09-28"), receipt(5, "2026-09-29", "5.00")])
+    assert all(account["frequency"] == "none" for account in one)

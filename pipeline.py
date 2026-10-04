@@ -182,6 +182,9 @@ def offline_extract(emails: list[dict]) -> list[dict]:
                 continue
             sender = parseaddr(email.get("from", ""))[1]
             name = re.search(r"Welcome to ([^!\n.]+)", text, re.I)
+            # "Welcome to the Pro plan" names a plan, not a company; fall back to the sender.
+            if name and re.match(r"(?:the|your|our)\b|.*\bplan$", name.group(1).strip(), re.I):
+                name = None
             institution = name.group(1).strip() if name else (sender.split("@")[-1].split(".")[-2].replace("-", " ").title() if "." in sender else sender)
             if not institution:
                 continue
@@ -193,8 +196,26 @@ def offline_extract(emails: list[dict]) -> list[dict]:
             requested = field(body, "Requested action after a death")
             item["action"] = requested if requested in {"cancel", "transfer", "claim", "notify", "memorialize"} else ACTIONS.get(item["category"], "notify")
             item["_charges"] = charge_events(email, item["amount"], item["frequency"])
+            item["_email"] = email
             found.append(item)
+    infer_monthly(found)
+    for item in found:
+        item.pop("_email", None)
     return merge(found)
+
+
+def infer_monthly(items: list[dict]) -> None:
+    """Receipts that never say "monthly" (Stripe, app stores) are monthly when the same amount repeats about a month apart."""
+    groups: dict[tuple[str, float], list[dict]] = {}
+    for item in items:
+        if item["category"] == "subscription" and item["frequency"] == "none" and item.get("amount") and charge_events(item["_email"], item["amount"], "monthly"):
+            groups.setdefault((company_key(item["institution"]), item["amount"]), []).append(item)
+    for group in groups.values():
+        days = sorted({date.fromisoformat(item["first_seen"]) for item in group})
+        if len(days) >= 2 and any(25 <= (later - earlier).days <= 35 for earlier, later in zip(days, days[1:])):
+            for item in group:
+                item["frequency"] = "monthly"
+                item["_charges"] = charge_events(item["_email"], item["amount"], "monthly")
 
 
 def _parallel(work, items: list) -> list:

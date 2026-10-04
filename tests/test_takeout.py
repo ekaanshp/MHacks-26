@@ -43,3 +43,15 @@ def test_takeout_filters_mime_dates_labels_and_hidden_fields(tmp_path):
     assert inbox["emails"][0]["subject"] == "Your résumé receipt"
     assert inbox["emails"][1]["body"] == "Your bill & receipt"
     assert all(not key.startswith("_truth") for email in inbox["emails"] for key in email)
+
+
+def test_takeout_keeps_only_allowed_sender_domains(tmp_path):
+    path = tmp_path / "mail.mbox"
+    box = mailbox.mbox(str(path))
+    for sender in ["noreply@tm.openai.com", "billing@anthropic.com", "news@notanthropic.com", "friend@gmail.com", "x@openai.com.evil.io"]:
+        box.add(message(sender))
+    box.flush()
+    box.close()
+    inbox = import_mailbox(path, own_address="owner@example.com", today=date(2026, 10, 3), only_from=("openai.com", "@Anthropic.com "))
+    assert sorted(email["from"] for email in inbox["emails"]) == ["billing@anthropic.com", "noreply@tm.openai.com"]
+    assert inbox["import_stats"]["other_senders"] == 3

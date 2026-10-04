@@ -35,7 +35,8 @@ def test_takeout_filters_mime_dates_labels_and_hidden_fields(tmp_path):
     box.flush()
     box.close()
     inbox = import_mailbox(path, own_address="owner@example.com", today=date(2026, 10, 3))
-    assert inbox["import_stats"] == {"total": 6, "kept": 2, "invalid_dates": 0, "senders": 1}
+    assert inbox["import_stats"] == {"total": 6, "kept": 2, "invalid_dates": 0, "senders": 1, "spam_or_trash": 2, "sent": 1,
+                                     "outside_range": 1, "first_date": "2026-10-02", "last_date": "2026-10-02"}
     assert inbox["synthetic"] is False and inbox["persona"]["name"] == ""
     assert inbox["persona"]["date_of_death"] == "2026-10-03"
     assert len(inbox["emails"][0]["body"]) == 2000

@@ -159,7 +159,7 @@ def run_browser_checks(base_url: str, screenshots: Path | None, executable: str 
                     assert page.evaluate("document.activeElement.dataset.accountId") == gym["id"]
                     page.locator(f'[data-account-id="{yoga["id"]}"]').click()
                     page.locator(".bank-fact").first.wait_for()
-                    assert "No emails. Found only on her Chase statement." in page.locator("#drawer-content").inner_text()
+                    assert "No emails. Found only on her bank statement." in page.locator("#drawer-content").inner_text()
                     page.keyboard.press("Escape")
                     page.locator("#ask-input").fill("Did Margaret have life insurance?")
                     page.get_by_role("button", name="Ask Lastly").click()
@@ -201,6 +201,18 @@ def run_browser_checks(base_url: str, screenshots: Path | None, executable: str 
                     route.fulfill(status=200, content_type="application/json", body=json.dumps(response))
 
                 page.route("**/api/call/browser-test-call", call_progress)
+
+                def estate_after_call(route, _request=None, *, polls=polls, cancelled=cancelled):
+                    # The server records a finished call's outcome; the page re-reads the estate to show it.
+                    response = route.fetch()
+                    body = response.json()
+                    if polls[0] >= 2 and cancelled:
+                        for account in body["accounts"]:
+                            if account["id"] == gym["id"]:
+                                account["status"] = "done"
+                    route.fulfill(response=response, body=json.dumps(body))
+
+                page.route("**/api/estate", estate_after_call)
                 try:
                     page.goto(f"{base_url}/?demo=1&estate=margaret-ellis&as=Daniel")
                     page.get_by_role("button", name="Read Margaret").click()
@@ -455,6 +467,18 @@ def run_conversation_browser_checks(base_url, executable):
             route.fulfill(status=200, content_type="application/json", body=json.dumps(result))
 
         page.route("**/api/agent-task/*", task_route)
+
+        def estate_after_task(route):
+            # The server records the company agent's answer; the page re-reads the estate to show it.
+            response = route.fetch()
+            body = response.json()
+            if task_started[0]:
+                for item in body["accounts"]:
+                    if item["id"] == account["id"]:
+                        item["status"] = "done"
+            route.fulfill(response=response, body=json.dumps(body))
+
+        page.route("**/api/estate", estate_after_task)
         try:
             page.goto(f"{base_url}/?demo=1&estate=margaret-ellis&as=Daniel")
             page.get_by_role("button", name="Read Margaret").click()
@@ -479,6 +503,10 @@ def run_conversation_browser_checks(base_url, executable):
             assert page.locator("#account-status").input_value() != "done"
             page.get_by_role("button", name="Let agents handle it").click()
             page.get_by_text("Reference: REF-PARAMOUNT", exact=True).wait_for()
+            for _ in range(50):
+                if page.locator("#account-status").input_value() == "done":
+                    break
+                page.wait_for_timeout(200)
             assert page.locator("#account-status").input_value() == "done"
             assert "subscription has been cancelled" in page.locator(".voice-transcript").inner_text()
             assert not errors, errors

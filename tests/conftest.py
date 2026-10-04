@@ -9,6 +9,16 @@ import pipeline
 from generate_inbox import generate_inbox
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings(monkeypatch):
+    """A developer's .env (keys, Neon, encryption, cloud consent) must never change test results."""
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "DATABASE_URL", "LASTLY_DATA_KEY", "LASTLY_ACCESS_TOKEN",
+                 "LASTLY_AGENT_TOKEN", "ELEVENLABS_API_KEY", "AGENT_SEED"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv("LASTLY_OFFLINE", "true")
+    monkeypatch.setenv("ALLOW_PRIVATE_CLOUD", "false")
+
+
 @pytest.fixture
 def dataset(monkeypatch, tmp_path):
     monkeypatch.setenv("LASTLY_DATA_DIR", str(tmp_path))

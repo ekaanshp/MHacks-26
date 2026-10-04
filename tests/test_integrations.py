@@ -159,7 +159,8 @@ def test_non_cancellation_action_cannot_auto_complete_as_cancelled(call_settings
 
 def test_agent_alone_never_proves_cancellation(call_settings):
     summary = calls.summarize_transcript([{ "role": "agent", "message": "The membership is cancelled. Reference number PF-20931."}])
-    assert summary == {"cancelled": False, "reference_number": None, "next_steps": []}
+    assert summary["cancelled"] is False and summary["result"] == "unclear"
+    assert summary["reference_number"] is None and summary["next_steps"] == []
 
 
 def test_fetch_seed_required_without_installing_uagents(monkeypatch):

@@ -28,11 +28,15 @@ def complete(system: str, user: str, *, json_mode: bool = False, model: str | No
         "system": system + ("\nReturn a single valid JSON object, without markdown fences." if json_mode else ""),
         "messages": [{"role": "user", "content": user}],
     }
+    headers = {"x-api-key": settings.anthropic_api_key, "anthropic-version": "2023-06-01"}
+    if settings.anthropic_workspace_id:
+        # Organization-level keys must name the workspace that is billed.
+        headers["anthropic-workspace-id"] = settings.anthropic_workspace_id
     for attempt in range(3):
         try:
             response = httpx.post(
                 "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": settings.anthropic_api_key, "anthropic-version": "2023-06-01"},
+                headers=headers,
                 json=payload,
                 timeout=httpx.Timeout(90, connect=10),
                 trust_env=False,
@@ -62,14 +66,28 @@ def complete(system: str, user: str, *, json_mode: bool = False, model: str | No
     raise LLMError("The AI service is temporarily unavailable.")
 
 
-def complete_json(system: str, user: str, *, model: str | None = None, max_tokens: int = 4096) -> dict:
-    raw = complete(system, user, json_mode=True, model=model, max_tokens=max_tokens).strip()
+def _json_object(raw: str) -> dict | None:
+    raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     try:
         result = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise LLMError("The AI service returned invalid JSON.") from exc
-    if not isinstance(result, dict):
-        raise LLMError("The AI response must be a JSON object.")
-    return result
+    except json.JSONDecodeError:
+        # Models occasionally add a sentence around the object; read the first complete one.
+        start = raw.find("{")
+        if start < 0:
+            return None
+        try:
+            result, _ = json.JSONDecoder().raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            return None
+    return result if isinstance(result, dict) else None
+
+
+def complete_json(system: str, user: str, *, model: str | None = None, max_tokens: int = 4096) -> dict:
+    # One unreadable reply should not end a long mailbox analysis, so ask once more.
+    for _ in range(2):
+        result = _json_object(complete(system, user, json_mode=True, model=model, max_tokens=max_tokens))
+        if result is not None:
+            return result
+    raise LLMError("The AI service returned invalid JSON.")

@@ -48,6 +48,22 @@ def body_text(message) -> str:
     return ""
 
 
+def detect_owner(path: Path, *, sample: int = 500) -> str:
+    """The mailbox owner's address: the most common Delivered-To in a Takeout export."""
+    box = mailbox.mbox(str(path), create=False)
+    counts: dict[str, int] = {}
+    try:
+        for index, message in enumerate(box):
+            if index >= sample:
+                break
+            address = parseaddr(decode(message.get("Delivered-To")))[1].lower()
+            if address:
+                counts[address] = counts.get(address, 0) + 1
+    finally:
+        box.close()
+    return max(counts, key=counts.get) if counts else ""
+
+
 def import_mailbox(path: Path, *, own_address: str = "", years: int = 5, today: date | None = None) -> dict:
     today = today or now_date()
     if years < 1:
@@ -56,15 +72,17 @@ def import_mailbox(path: Path, *, own_address: str = "", years: int = 5, today: 
     own_address = own_address.strip().lower()
     box = mailbox.mbox(str(path), create=False)
     emails = []
-    counts = {"total": 0, "kept": 0, "invalid_dates": 0}
+    counts = {"total": 0, "kept": 0, "invalid_dates": 0, "spam_or_trash": 0, "sent": 0, "outside_range": 0}
     try:
         for message in box:
             counts["total"] += 1
             labels = {label.strip().lower() for label in (message.get("X-Gmail-Labels", "")).split(",")}
             if labels & {"spam", "trash", "\\spam", "\\trash"}:
+                counts["spam_or_trash"] += 1
                 continue
             sender = parseaddr(decode(message.get("From")))[1].lower()
             if own_address and sender == own_address:
+                counts["sent"] += 1
                 continue
             try:
                 message_date = parsedate_to_datetime(message.get("Date", "")).date()
@@ -72,6 +90,7 @@ def import_mailbox(path: Path, *, own_address: str = "", years: int = 5, today: 
                 counts["invalid_dates"] += 1
                 continue
             if not cutoff <= message_date <= today:
+                counts["outside_range"] += 1
                 continue
             emails.append({
                 "id": f"msg_{len(emails):04d}",
@@ -84,6 +103,8 @@ def import_mailbox(path: Path, *, own_address: str = "", years: int = 5, today: 
         box.close()
     counts["kept"] = len(emails)
     counts["senders"] = len({email["from"] for email in emails})
+    dates = sorted(email["date"] for email in emails)
+    counts["first_date"], counts["last_date"] = (dates[0], dates[-1]) if dates else (None, None)
     return {
         "persona": {"name": "", "email": own_address, "age": None, "city": "", "date_of_death": today.isoformat(), "bio": "Imported locally from a Google Takeout export."},
         "today": today.isoformat(),

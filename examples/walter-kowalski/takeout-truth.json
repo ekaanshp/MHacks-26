@@ -1,0 +1,200 @@
+{
+  "name": "Walter Kowalski",
+  "owner": "walter.kowalski@example.com",
+  "today": "2026-10-04",
+  "date_of_death": "2026-09-13",
+  "messages": 4000,
+  "accounts": [
+    {
+      "key": "netflix",
+      "institution": "Netflix",
+      "category": "subscription",
+      "amount": 15.49,
+      "frequency": "monthly",
+      "sender": "info@account.netflix.com",
+      "evidence_messages": 36
+    },
+    {
+      "key": "spotify",
+      "institution": "Spotify",
+      "category": "subscription",
+      "amount": 11.99,
+      "frequency": "monthly",
+      "sender": "no-reply@spotify.com",
+      "evidence_messages": 37
+    },
+    {
+      "key": "planet_fitness",
+      "institution": "Planet Fitness",
+      "category": "subscription",
+      "amount": 24.99,
+      "frequency": "monthly",
+      "sender": "members@planetfitness.com",
+      "evidence_messages": 36
+    },
+    {
+      "key": "xfinity",
+      "institution": "Xfinity",
+      "category": "utility",
+      "amount": 74.99,
+      "frequency": "monthly",
+      "sender": "online.communications@alerts.comcast.net",
+      "evidence_messages": 36
+    },
+    {
+      "key": "att",
+      "institution": "AT&T",
+      "category": "utility",
+      "amount": 65.0,
+      "frequency": "monthly",
+      "sender": "att-services@emaildl.att-mail.com",
+      "evidence_messages": 36
+    },
+    {
+      "key": "utility",
+      "institution": "ComEd",
+      "category": "utility",
+      "amount": null,
+      "frequency": "monthly",
+      "sender": "noreply@comed.com",
+      "evidence_messages": 36
+    },
+    {
+      "key": "icloud",
+      "institution": "iCloud+",
+      "category": "subscription",
+      "amount": 2.99,
+      "frequency": "monthly",
+      "sender": "no_reply@email.apple.com",
+      "evidence_messages": 30
+    },
+    {
+      "key": "calm",
+      "institution": "Calm",
+      "category": "subscription",
+      "amount": 14.99,
+      "frequency": "monthly",
+      "sender": "no_reply@email.apple.com",
+      "evidence_messages": 30
+    },
+    {
+      "key": "paramount",
+      "institution": "Paramount+",
+      "category": "subscription",
+      "amount": 7.99,
+      "frequency": "monthly",
+      "sender": "no_reply@email.apple.com",
+      "evidence_messages": 30
+    },
+    {
+      "key": "prime",
+      "institution": "Amazon Prime",
+      "category": "subscription",
+      "amount": 139.0,
+      "frequency": "annual",
+      "sender": "prime@amazon.com",
+      "next_date": "2026-10-07",
+      "evidence_messages": 4
+    },
+    {
+      "key": "dropbox",
+      "institution": "Dropbox",
+      "category": "subscription",
+      "amount": 119.88,
+      "frequency": "annual",
+      "sender": "no-reply@dropbox.com",
+      "next_date": "2026-10-28",
+      "evidence_messages": 4
+    },
+    {
+      "key": "chase_checking",
+      "institution": "Chase Checking",
+      "category": "bank",
+      "amount": 8452.31,
+      "frequency": "balance",
+      "sender": "no.reply.alerts@chase.com",
+      "evidence_messages": 126
+    },
+    {
+      "key": "chase_card",
+      "institution": "Chase Freedom credit card",
+      "category": "debt",
+      "amount": 2314.87,
+      "frequency": "balance",
+      "sender": "no.reply.alerts@chase.com",
+      "evidence_messages": 36
+    },
+    {
+      "key": "fidelity",
+      "institution": "Fidelity Investments",
+      "category": "investment",
+      "amount": 67240.18,
+      "frequency": "balance",
+      "sender": "fidelity.investments@mail.fidelity.com",
+      "evidence_messages": 13
+    },
+    {
+      "key": "vanguard",
+      "institution": "Vanguard",
+      "category": "investment",
+      "amount": 31220.09,
+      "frequency": "balance",
+      "sender": "vanguard@eonline.e-vanguard.com",
+      "evidence_messages": 12
+    },
+    {
+      "key": "paypal",
+      "institution": "PayPal",
+      "category": "payment_app",
+      "amount": 183.42,
+      "frequency": "balance",
+      "sender": "service@paypal.com",
+      "evidence_messages": 40
+    },
+    {
+      "key": "metlife",
+      "institution": "MetLife",
+      "category": "insurance",
+      "amount": 50000.0,
+      "frequency": "balance",
+      "sender": "service@metlife.com",
+      "evidence_messages": 4
+    },
+    {
+      "key": "ssa",
+      "institution": "Social Security",
+      "category": "government",
+      "amount": 1684.6,
+      "frequency": "monthly",
+      "sender": "no-reply@ssa.gov",
+      "evidence_messages": 3
+    },
+    {
+      "key": "pension",
+      "institution": "Illinois TRS (Teachers' Retirement System)",
+      "category": "pension",
+      "amount": 2310.75,
+      "frequency": "monthly",
+      "sender": "member.services@trsil.org",
+      "evidence_messages": 6
+    },
+    {
+      "key": "facebook",
+      "institution": "Facebook",
+      "category": "digital_legacy",
+      "amount": null,
+      "frequency": "none",
+      "sender": "notification@facebookmail.com",
+      "evidence_messages": 260
+    },
+    {
+      "key": "google",
+      "institution": "Google Account",
+      "category": "digital_legacy",
+      "amount": null,
+      "frequency": "none",
+      "sender": "no-reply@accounts.google.com",
+      "evidence_messages": 5
+    }
+  ]
+}

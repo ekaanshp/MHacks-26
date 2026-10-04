@@ -14,7 +14,7 @@
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header" id="site-header">
     <a class="brand" href="/" aria-label="Lastly home"><span class="brand-mark" aria-hidden="true">✳</span><span>Lastly<span class="brand-period">.</span></span></a>
-    <div class="header-family"><span class="header-label">A place for your family</span><div class="avatar-stack" id="family-avatars" aria-label="Family members Daniel and Sarah"><span class="avatar avatar-sage">D</span><span class="avatar avatar-peach">S</span></div><button class="text-button" id="lock-estate" type="button" hidden>Lock estate</button></div>
+    <div class="header-family"><span class="header-label">A place for your family</span><div class="avatar-stack" id="family-avatars" aria-label="Family members" hidden></div><button class="text-button" id="lock-estate" type="button" hidden>Lock estate</button></div>
   </header>
   <main id="main" tabindex="-1">
     <section class="onboarding" id="signin-screen" aria-labelledby="signin-title" hidden>
@@ -32,15 +32,57 @@
         <button class="button button-primary" type="submit" id="signin-submit">Continue <span aria-hidden="true">→</span></button>
       </form>
       <p class="quiet-note">Names must match exactly, including capital letters.</p>
+      <button class="text-button upload-link" id="start-upload" type="button">Starting fresh? Upload their Google Takeout mailbox <span aria-hidden="true">→</span></button>
+    </section>
+    <section class="onboarding" id="upload-screen" aria-labelledby="upload-title" hidden>
+      <div class="eyebrow"><span class="tiny-star" aria-hidden="true">✳</span> Upload their email</div>
+      <h1 id="upload-title">Where is their<br>email kept?</h1>
+      <p class="onboarding-intro">Lastly reads a downloaded copy of the mailbox.<br>Choose the provider, export the mailbox once, and upload the file here.</p>
+      <div class="provider-grid" id="provider-grid" role="group" aria-label="Email provider">
+        <button class="provider-card" type="button" data-provider="gmail"><span class="option-icon" aria-hidden="true">✉</span><h2>Gmail</h2><p>Download the mailbox with Google Takeout.</p><div class="provider-tags"><span class="option-tag">Upload a mailbox file</span></div></button>
+        <button class="provider-card" type="button" data-provider="icloud"><span class="option-icon" aria-hidden="true">☁</span><h2>iCloud Mail</h2><p>Export the mailbox from Apple Mail on a Mac.</p><div class="provider-tags"><span class="option-tag">Upload a mailbox file</span></div></button>
+        <button class="provider-card" type="button" data-provider="yahoo"><span class="option-icon" aria-hidden="true">Y</span><h2>Yahoo Mail</h2><p>Yahoo has no export; copy it through a mail app first.</p><div class="provider-tags"><span class="option-tag">Upload a mailbox file</span></div></button>
+      </div>
+      <div id="upload-form-step" hidden>
+        <div class="upload-steps" id="upload-instructions" aria-live="polite"></div>
+        <form class="signin-form" id="upload-form" novalidate>
+          <label class="field-label" for="upload-file">Mailbox file (.mbox, or the file named “mbox”)</label>
+          <input id="upload-file" type="file">
+          <label class="field-label" for="upload-deceased">Your loved one’s full name</label>
+          <input id="upload-deceased" autocomplete="off" spellcheck="false" maxlength="120" placeholder="Full name, e.g. Margaret Ellis">
+          <label class="field-label" for="upload-name">Your first name</label>
+          <input id="upload-name" autocomplete="off" spellcheck="false" maxlength="60" placeholder="e.g. Sarah">
+          <label class="field-label" for="upload-relationship">Your relationship to them</label>
+          <input id="upload-relationship" autocomplete="off" spellcheck="false" maxlength="40" placeholder="e.g. daughter">
+          <div class="upload-pair">
+            <div><label class="field-label" for="upload-death">Date they passed</label><input id="upload-death" type="date" required></div>
+            <div><label class="field-label" for="upload-pronoun">Refer to them as</label><select id="upload-pronoun"><option value="she">she / her</option><option value="he">he / him</option></select></div>
+          </div>
+          <progress class="analysis-progress upload-progress" id="upload-progress" value="0" max="100" aria-label="Upload progress" hidden></progress>
+          <p class="upload-status" id="upload-status" role="status" aria-live="polite"></p>
+          <p class="inline-error" id="upload-error" role="alert" hidden></p>
+          <button class="button button-primary" type="submit" id="upload-submit">Upload and review <span aria-hidden="true">→</span></button>
+        </form>
+        <button class="text-button upload-link" id="upload-change-provider" type="button">← Choose a different provider</button>
+      </div>
+      <p class="quiet-note">The mailbox is encrypted on this computer and opens only with your family access code.<br>AI reads it only if your family has allowed private cloud analysis.</p>
+      <button class="text-button upload-link" id="upload-back" type="button">← Back</button>
+    </section>
+    <section class="onboarding" id="import-review-screen" aria-labelledby="import-review-title" hidden>
+      <div class="eyebrow"><span class="tiny-star" aria-hidden="true">✳</span> Before we read it</div>
+      <h1 id="import-review-title">Is this the<br>right mailbox?</h1>
+      <p class="onboarding-intro">Check what was uploaded. Nothing has been analyzed yet.</p>
+      <div class="review-facts" id="import-review-facts"></div>
+      <div class="review-buttons"><button class="button button-primary" id="import-confirm" type="button">Looks right, find accounts <span aria-hidden="true">→</span></button><button class="text-button" id="import-delete" type="button">Delete this upload</button></div>
+      <p class="inline-error" id="import-review-error" role="alert" hidden></p>
     </section>
     <section class="onboarding" id="plan-screen" aria-labelledby="plan-title" hidden>
       <div class="eyebrow"><span class="tiny-star" aria-hidden="true">✳</span> A thoughtful start</div>
       <h1 id="plan-title">How Margaret’s inbox<br>was connected</h1>
       <p class="onboarding-intro">A little planning makes a difficult time a little easier.<br>Here’s how her family can begin.</p>
       <div class="connection-options">
-        <article class="connection-card selected"><span class="option-icon" aria-hidden="true">♡</span><span class="selected-check" aria-hidden="true">✓</span><h2>She set up Lastly<br>in advance</h2><p>Margaret chose to share her account information with her family when the time came.</p><span class="option-tag" id="connected-for">Connected for Daniel</span></article>
-        <article class="connection-card"><span class="option-icon" aria-hidden="true">✉</span><h2>Connect Gmail<br>or Outlook</h2><p>With authorized access, connect an inbox to find the accounts that need your attention.</p><span class="option-tag muted-tag">Coming soon</span></article>
-        <article class="connection-card"><span class="option-icon" aria-hidden="true">↥</span><h2>Upload a Google<br>Takeout export</h2><p>Use a downloaded copy of an inbox. A local import is available in the setup guide.</p><span class="option-tag muted-tag">Upload coming soon</span></article>
+        <article class="connection-card selected" id="plan-advance-card"><span class="option-icon" aria-hidden="true">♡</span><span class="selected-check" aria-hidden="true">✓</span><h2>She set up Lastly<br>in advance</h2><p>Margaret chose to share her account information with her family when the time came.</p><span class="option-tag" id="connected-for">Connected for Daniel</span></article>
+        <article class="connection-card" id="plan-upload-card"><span class="option-icon" aria-hidden="true">↥</span><span class="selected-check" aria-hidden="true" hidden>✓</span><h2>Upload their<br>email export</h2><p id="plan-upload-text">Use a downloaded copy of a Gmail, iCloud or Yahoo mailbox. Lastly reads the file and finds the accounts in it.</p><button class="option-tag option-button" id="plan-upload" type="button">Upload an email export</button></article>
       </div>
       <button class="button button-primary" id="continue-button">Continue to Margaret’s estate <span aria-hidden="true">→</span></button>
       <p class="quiet-note">For the family, with care. Every next step stays in your hands.</p>
@@ -49,7 +91,7 @@
       <div class="persona-monogram" aria-hidden="true">M<span>✳</span></div>
       <div class="eyebrow">Margaret’s family hub</div>
       <h1 id="welcome-title">You don’t have to figure<br>it all out at once.</h1>
-      <p class="onboarding-intro">We’ll read Margaret’s inbox and bank statement, find her accounts,<br>and help your family see what needs attention.</p>
+      <p class="onboarding-intro" id="welcome-intro">We’ll read Margaret’s inbox and bank statement, find her accounts,<br>and help your family see what needs attention.</p>
       <div class="welcome-source"><span class="source-check" aria-hidden="true">✓</span><div><strong id="welcome-persona">Margaret’s information is ready</strong><span>Email and Chase bank statement · Authorized by her family</span></div></div>
       <button class="button button-primary" id="analyze-button">Read Margaret’s inbox <span aria-hidden="true">→</span></button>
       <p class="inline-error" id="analyze-error" role="alert" hidden></p>
@@ -71,12 +113,22 @@
       <div class="dashboard-heading"><div><h1 id="dashboard-title">A little clarity,<br><em>one step at a time.</em></h1><p id="estate-description">Here’s what we found, and how your family can move forward.</p></div><div class="estate-person"><span class="avatar avatar-large" id="persona-avatar" aria-hidden="true">M</span><div><strong id="persona-name"></strong><span id="persona-detail"></span></div></div></div>
       <div class="summary-grid" id="summary-grid"></div>
       <div class="estate-facts" id="estate-facts"></div>
+      <section class="next-steps" id="next-steps" aria-labelledby="next-steps-title" hidden>
+        <div class="section-title-row"><div><span class="eyebrow">Ordered for your family</span><h2 id="next-steps-title">What should we do next?</h2></div><div class="next-steps-tools"><button class="text-button" id="open-digest" type="button">This week’s digest</button><button class="text-button" id="download-report" type="button">Executor report ↓</button></div></div>
+        <ol class="next-steps-list" id="next-steps-list"></ol>
+      </section>
       <div class="urgent-alert" id="urgent-alert" hidden></div>
+      <section class="review-queue" id="review-queue" aria-labelledby="review-title" hidden></section>
       <section class="discovery-card" id="discovery-card" aria-labelledby="discovery-heading" hidden></section>
       <section class="accounts-section" aria-labelledby="accounts-title">
         <div class="section-title-row"><div><span class="eyebrow">A shared next step</span><h2 id="accounts-title">Her accounts, together.</h2></div><div class="account-count" id="account-count"></div></div>
         <div class="account-tabs" id="account-tabs" role="group" aria-label="Filter accounts"></div>
         <div id="ledger"></div>
+      </section>
+      <section class="funding-section" id="funding-section" aria-labelledby="funding-title" hidden>
+        <span class="eyebrow">Close things in the right order</span><h2 id="funding-title">How the bills are paid</h2>
+        <p>Each recurring charge, grouped by the card or account that pays it. Stop the charges before closing what pays them.</p>
+        <div class="funding-grid" id="funding-grid"></div>
       </section>
       <section class="ask-section" aria-labelledby="ask-title"><div class="ask-intro"><span class="ask-symbol" aria-hidden="true">✳</span><div><h2 id="ask-title">A question on your mind?</h2><p>Ask about her accounts. We’ll show you what supports the answer.</p></div></div><form id="ask-form"><label for="ask-input" class="sr-only">Your question about the estate</label><input id="ask-input" name="question" placeholder="Did Margaret have life insurance?" maxlength="1500" required><button class="button button-primary" id="ask-button" type="submit">Ask Lastly <span aria-hidden="true">↗</span></button></form><div id="ask-result" aria-live="polite" hidden></div></section>
       <div class="lower-grid"><section class="coverage-section" aria-labelledby="coverage-title"><span class="eyebrow">The whole picture</span><h2 id="coverage-title">Where else to look</h2><p>An inbox tells part of the story. These places can help you find the rest.</p><ul class="coverage-list" id="coverage-list"></ul><button class="text-button checklist-download" type="button">Save the family checklist <span aria-hidden="true">↓</span></button></section><section class="activity-section" aria-labelledby="activity-title"><div class="activity-heading"><div><span class="eyebrow">Moving forward together</span><h2 id="activity-title">Family activity</h2></div><button class="icon-button" id="refresh-activity" aria-label="Refresh family activity">↻</button></div><div id="activity-list" aria-live="polite"></div><p class="family-footnote">Every completed task is one less thing for your family to carry.</p></section></div>
@@ -88,6 +140,11 @@
     <section class="drawer" id="account-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"><button class="icon-button drawer-close" id="drawer-close" aria-label="Close account details">×</button><div id="drawer-content"></div></section>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog class="access-dialog digest-dialog" id="digest-dialog" aria-labelledby="digest-title">
+    <h2 id="digest-title">This week, for the family</h2>
+    <div id="digest-body"></div>
+    <div class="access-actions"><button class="text-button" id="digest-copy" type="button">Copy text</button><button class="text-button" id="digest-download" type="button">Download</button><button class="button button-primary" id="digest-close" type="button">Close</button></div>
+  </dialog>
   <dialog class="access-dialog" id="access-dialog" aria-labelledby="access-title" aria-describedby="access-description">
     <form id="access-form">
       <h2 id="access-title">Open your family’s estate</h2>

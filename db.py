@@ -24,6 +24,7 @@ LOG = logging.getLogger(__name__)
 UNSET = object()
 _LOCK = threading.RLock()
 _ESTATE_FIELDS = {"estate_id", "persona", "stats", "totals", "today", "accounts"}
+FAMILY_FIELDS = ("review", "corrections", "notes", "followups", "documents", "outcome")
 _VALID_STATUSES = {"open", "in_progress", "done"}
 # Backend-only columns: sync bookkeeping and private family member ids.
 _PRIVATE_ACTIVITY = {"sync_key", "actor_member_id"}
@@ -54,9 +55,18 @@ def _atomic_json(path: Path, value: Any) -> None:
     write_json(path, value)
 
 
+class EstateRemoved(LookupError):
+    """The estate's mailbox was deleted; its directory must not be re-created by a late request."""
+
+
 @contextmanager
 def _local_lock():
+    from config import root_data_dir
+
     directory = _data_dir()
+    # A deleted estate's directory is gone; a late request must not bring it back.
+    if not Path(directory).exists() and Path(directory).resolve() != Path(root_data_dir()).resolve():
+        raise EstateRemoved("This estate's mailbox was deleted.")
     with _LOCK, private_file_lock(directory / ".family-store.lock"):
         yield directory
 
@@ -158,8 +168,17 @@ def _preserve_edits(estate: dict[str, Any], previous: dict[str, Any] | None) -> 
         allocated_ids.add(account["id"])
         account["status"] = old.get("status", "open") if old else account.get("status", "open")
         account["assigned_to"] = old.get("assigned_to") if old else account.get("assigned_to")
+        for field in FAMILY_FIELDS:
+            if old and old.get(field):
+                account[field] = copy.deepcopy(old[field])
         if account["status"] not in _VALID_STATUSES:
             raise ValueError("Account status must be open, in_progress, or done.")
+    # Accounts the family added are not in any inbox; they stay until the family removes them.
+    present = {_identity(account) for account in result.get("accounts", [])}
+    for old in known.values():
+        if old.get("sources") == ["family"] and _identity(old) not in present and old["id"] not in allocated_ids:
+            result["accounts"].append(copy.deepcopy(old))
+            allocated_ids.add(old["id"])
     return result
 
 
@@ -518,9 +537,16 @@ def _validate_edits(status: str | None, assigned_to: Any) -> None:
         raise ValueError("Assignee must be a nonempty name, up to 100 characters, or null.")
 
 
-def update_account(estate_id: int | None, acct_id: str, status: str | None = None, assigned_to: Any = UNSET) -> dict[str, Any]:
-    """Patch an account. Omitted assignment is retained; explicit None clears it."""
+def update_account(estate_id: int | None, acct_id: str, status: str | None = None, assigned_to: Any = UNSET,
+                   fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Patch an account. Omitted assignment is retained; explicit None clears it.
+
+    ``fields`` sets family workspace data (review, corrections, notes, follow-ups, documents, outcome).
+    """
     _validate_edits(status, assigned_to)
+    fields = dict(fields or {})
+    if set(fields) - set(FAMILY_FIELDS):
+        raise ValueError("Only family workspace fields can be changed here.")
     if _database_configured():
         try:
             from psycopg.types.json import Jsonb
@@ -543,6 +569,7 @@ def update_account(estate_id: int | None, acct_id: str, status: str | None = Non
                     account["status"] = status
                 if assigned_to is not UNSET:
                     account["assigned_to"] = assigned_to.strip() if isinstance(assigned_to, str) else None
+                account.update(copy.deepcopy(fields))
                 connection.execute(
                     "UPDATE accounts SET data = %s, status = %s, assigned_to = %s, updated_at = now() WHERE estate_id = %s AND id = %s",
                     (Jsonb(account), account["status"], account["assigned_to"], estate_id, acct_id),
@@ -567,16 +594,83 @@ def update_account(estate_id: int | None, acct_id: str, status: str | None = Non
             account["status"] = status
         if assigned_to is not UNSET:
             account["assigned_to"] = assigned_to.strip() if isinstance(assigned_to, str) else None
+        account.update(copy.deepcopy(fields))
         if _database_configured(estate):
-            fields = {}
+            patch = copy.deepcopy(fields)
             if status is not None:
-                fields["status"] = status
+                patch["status"] = status
             if assigned_to is not UNSET:
-                fields["assigned_to"] = account["assigned_to"]
-            if fields:
-                _queue_patch(store, estate, account, fields)
+                patch["assigned_to"] = account["assigned_to"]
+            if patch:
+                _queue_patch(store, estate, account, patch)
         _write_store(directory, store, _latest(store))
         return copy.deepcopy(account)
+
+
+def add_account(estate_id: int | None, account: dict[str, Any]) -> dict[str, Any]:
+    """Add an account the family knows about. It is saved where the estate lives (Neon or local)."""
+    account = copy.deepcopy(account)
+    if _database_configured():
+        try:
+            from psycopg.types.json import Jsonb
+
+            with _connection() as connection:
+                if estate_id is None:
+                    latest = connection.execute("SELECT id FROM estates ORDER BY created_at DESC, id DESC LIMIT 1").fetchone()
+                    if latest is None:
+                        raise KeyError("No estate has been analyzed yet.")
+                    estate_id = latest["id"]
+                existing = connection.execute("SELECT id, data FROM accounts WHERE estate_id = %s FOR UPDATE", (estate_id,)).fetchall()
+                if any(_identity(row["data"]) == _identity(account) for row in existing):
+                    raise ValueError("This account is already listed.")
+                account["id"] = _next_account_id({row["id"] for row in existing})
+                connection.execute(
+                    "INSERT INTO accounts (estate_id, id, data, status, assigned_to) VALUES (%s, %s, %s, %s, %s)",
+                    (estate_id, account["id"], Jsonb(account), account["status"], account.get("assigned_to")),
+                )
+                row = connection.execute("SELECT metadata FROM estates WHERE id = %s", (estate_id,)).fetchone()
+                metadata = dict(row["metadata"] or {})
+                metadata["_account_order"] = list(metadata.get("_account_order", [])) + [account["id"]]
+                connection.execute("UPDATE estates SET metadata = %s WHERE id = %s", (Jsonb(metadata), estate_id))
+                estate = _remote_load(connection, estate_id)
+            _mirror_remote(estate)
+            return account
+        except (KeyError, ValueError):
+            raise
+        except _database_errors():
+            # A family-added account must not silently exist on one laptop only.
+            raise RuntimeError("The shared family database is unavailable. Try adding the account again shortly.") from None
+    with _local_lock() as directory:
+        store = _read_store(directory)
+        estate = _latest(store, estate_id)
+        if estate is None:
+            raise KeyError("No matching estate has been analyzed yet.")
+        if any(_identity(item) == _identity(account) for item in estate["accounts"]):
+            raise ValueError("This account is already listed.")
+        account["id"] = _next_account_id({item["id"] for item in estate["accounts"]})
+        estate["accounts"].append(account)
+        _write_store(directory, store, _latest(store))
+        return copy.deepcopy(account)
+
+
+def _next_account_id(taken: set[str]) -> str:
+    index = 0
+    while f"acct_{index:02d}" in taken:
+        index += 1
+    return f"acct_{index:02d}"
+
+
+def delete_person(persona: dict[str, Any]) -> None:
+    """Remove every saved analysis, account and activity for one person (used when a family deletes an upload)."""
+    key = _persona_key(persona)
+    if _database_configured():
+        try:
+            with _connection() as connection:
+                connection.execute(
+                    "DELETE FROM estates WHERE lower(coalesce(nullif(persona->>'email', ''), persona->>'name')) = %s", (key,))
+                connection.execute("DELETE FROM relatives WHERE deceased_email = %s", (str(persona.get("email", "")).casefold(),))
+        except _database_errors():
+            raise RuntimeError("The shared family database is unavailable, so the upload was not deleted. Try again shortly.") from None
 
 
 def log_activity(estate_id: int | None, acct_id: str | None, actor: str, action: str) -> dict[str, Any]:

@@ -58,13 +58,21 @@ def estates() -> dict[str, Path]:
             inbox = read_json(path / "inbox.json")
         except (OSError, ValueError):
             continue
-        # Only synthetic estates are added from estates/; the root keeps its own privacy rules.
-        if path != root and inbox.get("synthetic") is not True:
+        # Synthetic estates are added from estates/. An uploaded mailbox is listed only while
+        # it is protected by the family access code and encryption; the root keeps its own rules.
+        if path != root and inbox.get("synthetic") is not True and not (inbox.get("imported") is True and private_imports_allowed()):
             continue
         slug = slugify(str((inbox.get("persona") or {}).get("name") or path.name))
         found.setdefault(slug, path)
     _REGISTRY.update(key=key, estates=found)
     return dict(found)
+
+
+def private_imports_allowed() -> bool:
+    """Real mail may be stored and opened only behind the access code and with encryption at rest."""
+    from secure_storage import encryption_enabled
+
+    return bool(os.getenv("LASTLY_ACCESS_TOKEN")) and encryption_enabled()
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -80,6 +88,8 @@ class Settings:
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     llm_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"))
+    llm_triage_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_TRIAGE_MODEL", "claude-haiku-4-5"))
+    anthropic_workspace_id: str = field(default_factory=lambda: os.getenv("ANTHROPIC_WORKSPACE_ID", ""))
     offline: bool = field(default_factory=lambda: env_bool("LASTLY_OFFLINE", True))
     allow_private_cloud: bool = field(default_factory=lambda: env_bool("ALLOW_PRIVATE_CLOUD"))
     elevenlabs_api_key: str = field(default_factory=lambda: os.getenv("ELEVENLABS_API_KEY", ""))

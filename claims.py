@@ -22,6 +22,25 @@ from secure_storage import private_file_lock, read_json, write_json
 _LOCK = threading.RLock()
 _MAX_RECORDS = 200
 ACTIVE = {"queued", "sent", "opened"}
+# A claim nobody answers is closed with a reason the family can act on.
+DEADLINES = {"queued": 60, "sent": 90}
+STALLED = {"queued": "Lastly's Fetch.ai agent never picked up the claim. Check that fetch_agent.py is running.",
+           "sent": "The insurer's agent did not answer. Check that insurer_agent.py is running."}
+
+
+def _expire(record: dict[str, Any]) -> bool:
+    scale = float(os.getenv("LASTLY_AGENT_TIMEOUT_SCALE", "1") or 1)
+    limit = DEADLINES.get(record.get("status", ""), 0) * scale
+    if not limit:
+        return False
+    try:
+        waited = (datetime.now(UTC) - datetime.fromisoformat(record["updated_at"])).total_seconds()
+    except (KeyError, ValueError):
+        return False
+    if waited < limit:
+        return False
+    record.update(status="timed_out", message=STALLED[record["status"]], updated_at=_now())
+    return True
 AGENT_ADDRESS = re.compile(r"agent1[a-z0-9]{50,70}")
 
 
@@ -63,7 +82,7 @@ def _now() -> str:
 
 
 def public(record: dict[str, Any]) -> dict[str, Any]:
-    keys = ("id", "account_id", "institution", "status", "claim_number", "required_documents", "message", "responder", "created_at", "updated_at")
+    keys = ("id", "account_id", "institution", "status", "claim_number", "required_documents", "message", "responder", "created_at", "updated_at", "attempt")
     return {key: record.get(key) for key in keys}
 
 
@@ -72,9 +91,14 @@ def create(account: dict[str, Any], persona: dict[str, Any], executor: str) -> d
     address = require_configured()
     fingerprint = persona_fingerprint(persona)
     with _locked() as records:
+        attempts = 0
         for record in records.values():
-            if record.get("account_id") == account["id"] and record.get("persona") == fingerprint and record.get("status") in ACTIVE:
-                return public(record)
+            if record.get("account_id") == account["id"] and record.get("persona") == fingerprint:
+                if _expire(record):
+                    write_json(_path(), records)
+                if record.get("status") in ACTIVE:
+                    return public(record)
+                attempts += 1
         if len(records) >= _MAX_RECORDS:
             # Drop the oldest finished records; active claims are never evicted.
             for key in sorted((key for key, value in records.items() if value.get("status") not in ACTIVE), key=lambda key: records[key]["created_at"])[:20]:
@@ -82,7 +106,7 @@ def create(account: dict[str, Any], persona: dict[str, Any], executor: str) -> d
         claim_id = uuid.uuid4().hex
         records[claim_id] = {
             "id": claim_id, "account_id": account["id"], "persona": fingerprint, "institution": account["institution"],
-            "insurer": address, "status": "queued", "created_at": _now(), "updated_at": _now(),
+            "insurer": address, "status": "queued", "created_at": _now(), "updated_at": _now(), "attempt": attempts + 1,
             "request": {
                 "request_id": claim_id,
                 "policyholder_name": str(persona.get("name") or ""),
@@ -100,12 +124,19 @@ def latest(account_id: str, persona: dict[str, Any]) -> dict[str, Any] | None:
     fingerprint = persona_fingerprint(persona)
     with _locked() as records:
         matches = [record for record in records.values() if record.get("account_id") == account_id and record.get("persona") == fingerprint]
-    return public(max(matches, key=lambda record: record["created_at"])) if matches else None
+        if not matches:
+            return None
+        record = max(matches, key=lambda record: record["created_at"])
+        if _expire(record):
+            write_json(_path(), records)
+        return public(record)
 
 
 def pending() -> list[dict[str, Any]]:
     """Requests the Lastly agent should deliver, with the insurer it must deliver them to."""
     with _locked() as records:
+        if any([_expire(record) for record in records.values()]):
+            write_json(_path(), records)
         return [{"insurer": record["insurer"], **record["request"]} for record in records.values() if record.get("status") == "queued"]
 
 
@@ -117,6 +148,8 @@ def update(claim_id: str, status: str, *, responder: str = "", claim_number: str
         if record is None:
             raise KeyError(claim_id)
         transitions = {"queued": {"sent", "failed", "opened", "rejected"}, "sent": {"opened", "rejected", "failed"}}
+        if record["status"] == "timed_out":
+            raise ValueError("This claim timed out and was closed. Start a new claim from the account.")
         if status not in transitions.get(record["status"], set()):
             if record["status"] == status:
                 return public(record)

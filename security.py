@@ -28,6 +28,10 @@ from config import DATA_DIR, get_settings
 
 LOG = logging.getLogger("lastly.security")
 BODY_LIMIT = 64 * 1024
+# Mailbox uploads stream to disk instead of memory; Takeout exports are often several gigabytes.
+UPLOAD_PATH = "/api/import"
+UPLOAD_LIMIT = 8 * 1024 * 1024 * 1024
+UPLOAD_TYPES = {"application/mbox", "application/octet-stream"}
 SESSION_IDLE = 30 * 60
 SESSION_LIFETIME = 8 * 60 * 60
 CSP = (
@@ -196,8 +200,20 @@ class SecurityMiddleware:
             return await reject(429, "Too many requests. Try again shortly.", **{"Retry-After": "60"})
         if is_api and method in MUTATING and headers.get("x-requested-with") != "Lastly":
             return await reject(403, "Use the Lastly client request header for this operation.")
+        upload = path == UPLOAD_PATH and method == "POST"
         # Buffer a bounded body, including chunked messages without Content-Length.
-        if is_api:
+        if is_api and upload:
+            declared = headers.get("content-length", "")
+            if not declared.isdecimal() or len(declared) > 11:
+                return await reject(411, "Upload the mailbox with a known length.")
+            if int(declared) > UPLOAD_LIMIT:
+                return await reject(413, "The mailbox is too large to upload.")
+            if headers.get("content-type", "").split(";", 1)[0].strip().lower() not in UPLOAD_TYPES:
+                return await reject(415, "Upload a .mbox file.")
+            # The endpoint streams the body to disk and counts it against the declared length.
+            body = b""
+            bounded_receive = receive
+        elif is_api:
             declared = headers.get("content-length", "0")
             if not declared.isdecimal() or len(declared) > 10:
                 return await reject(400, "Invalid request length.")
@@ -323,7 +339,7 @@ class SecurityMiddleware:
             return await response(scope, bounded_receive, protected_send)
         if is_api and method in MUTATING:
             operation = path.split("/")[2] if len(path.split("/")) > 2 else "unknown"
-            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12, "agent-task": 12, "identify": 12}
+            limits = {"import": 3, "accounts": 12, "analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12, "agent-task": 12, "identify": 12}
             if operation in limits and not self.consume((operation, context), limits[operation]):
                 return await reject(429, "This operation is temporarily rate limited.", **{"Retry-After": "60"})
         scope.setdefault("state", {}).update(principal=principal, request_id=request_id)

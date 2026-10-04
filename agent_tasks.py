@@ -13,7 +13,36 @@ from claims import AGENT_ADDRESS, ClaimsNotConfigured
 from secure_storage import private_file_lock, read_json, write_json
 
 _LOCK = threading.RLock()
-TERMINAL = {"completed", "pending", "rejected", "failed"}
+TERMINAL = {"completed", "pending", "rejected", "failed", "timed_out"}
+RETRYABLE = {"failed", "rejected", "timed_out"}
+# How long each step may wait before the family is told what stalled. Overridable for slow demos.
+DEADLINES = {"queued": 60, "sent": 90, "awaiting_details": 90, "details_sent": 90}
+STALLED = {
+    "queued": "Lastly's Fetch.ai agent never picked up the request. Check that fetch_agent.py is running and connected.",
+    "sent": "The company's agent did not answer. Check that insurer_agent.py is running and reachable.",
+    "awaiting_details": "Lastly's agent did not send the account details the company asked for. Check fetch_agent.py.",
+    "details_sent": "The company's agent did not confirm the request. Check insurer_agent.py.",
+}
+
+
+def _deadline(status: str) -> float:
+    scale = float(os.getenv("LASTLY_AGENT_TIMEOUT_SCALE", "1") or 1)
+    return DEADLINES.get(status, 0) * scale
+
+
+def _expire(record) -> bool:
+    """Mark a stalled request as timed out; return whether it changed."""
+    limit = _deadline(record["status"])
+    if not limit:
+        return False
+    try:
+        waited = (datetime.now(UTC) - datetime.fromisoformat(record["updated_at"])).total_seconds()
+    except (KeyError, ValueError):
+        return False
+    if waited < limit:
+        return False
+    record.update(status="timed_out", failure_reason=STALLED[record["status"]], updated_at=datetime.now(UTC).isoformat())
+    return True
 
 
 def company_address():
@@ -35,10 +64,14 @@ def _locked():
 
 
 def public(record):
-    return {key: record.get(key) for key in (
+    output = {key: record.get(key) for key in (
         "id", "account_id", "institution", "action", "status", "reference_number",
-        "required_documents", "message", "transcript", "created_at", "updated_at",
+        "required_documents", "message", "transcript", "created_at", "updated_at", "failure_reason",
     )}
+    output["attempts"] = list(record.get("attempts") or [])
+    limit = _deadline(record.get("status", ""))
+    output["deadline_seconds"] = round(limit) if limit else None
+    return output
 
 
 def create(account, persona, executor):
@@ -48,9 +81,16 @@ def create(account, persona, executor):
                                  "LASTLY_AGENT_TOKEN, and both fetch_agent.py and insurer_agent.py running.")
     fingerprint = persona_fingerprint(persona)
     with _locked() as records:
-        for record in records.values():
-            if record["account_id"] == account["id"] and record["persona"] == fingerprint and record["status"] not in {"failed", "rejected"}:
+        previous = []
+        for record in sorted(records.values(), key=lambda item: item["created_at"]):
+            if record["account_id"] != account["id"] or record["persona"] != fingerprint:
+                continue
+            if _expire(record):
+                write_json(_path(), records)
+            if record["status"] not in RETRYABLE:
                 return public(record)
+            previous.append({"id": record["id"], "status": record["status"], "failure_reason": record.get("failure_reason") or record.get("message"),
+                             "transcript": record.get("transcript", []), "created_at": record["created_at"]})
         if len(records) >= 200:
             raise ValueError("The agent task limit has been reached.")
         task_id = uuid4().hex
@@ -59,6 +99,8 @@ def create(account, persona, executor):
             "id": task_id, "account_id": account["id"], "institution": account["institution"],
             "action": account["action"], "persona": fingerprint, "company": address,
             "status": "queued", "transcript": [], "created_at": now, "updated_at": now,
+            # Earlier attempts stay visible, so a retry never hides what already happened.
+            "attempts": previous[-5:],
             "request": {"request_id": task_id, "institution": account["institution"],
                         "action": account["action"], "category": account["category"],
                         "person_name": str(persona.get("name") or ""),
@@ -73,14 +115,21 @@ def latest(account_id, persona):
     fingerprint = persona_fingerprint(persona)
     with _locked() as records:
         matches = [r for r in records.values() if r["account_id"] == account_id and r["persona"] == fingerprint]
-        return public(max(matches, key=lambda r: r["created_at"])) if matches else None
+        if not matches:
+            return None
+        record = max(matches, key=lambda r: r["created_at"])
+        if _expire(record):
+            write_json(_path(), records)
+        return public(record)
 
 
 def pending(persona):
     fingerprint = persona_fingerprint(persona)
     with _locked() as records:
         output = []
+        changed = False
         for record in records.values():
+            changed = _expire(record) or changed
             if record["persona"] != fingerprint or record["status"] not in {"queued", "awaiting_details"}:
                 continue
             request = dict(record["request"], company=record["company"],
@@ -88,6 +137,8 @@ def pending(persona):
             if request["stage"] == "intro":
                 request.update(person_name="", date_of_death="", executor_name="")
             output.append(request)
+        if changed:
+            write_json(_path(), records)
         return output
 
 
@@ -106,6 +157,8 @@ def update(task_id, persona, status, *, responder="", message="", reference_numb
         # A provider response can beat the relay's acknowledgement.
         if status == record["status"]:
             return public(record)
+        if record["status"] == "timed_out":
+            raise ValueError("This request timed out and was closed. Start a new request from the account.")
         if (status == "sent" and record["status"] != "queued") or (status == "details_sent" and record["status"] in TERMINAL):
             line = {"speaker": "Lastly", "message": message}
             if message and line not in record["transcript"]:
@@ -122,5 +175,7 @@ def update(task_id, persona, status, *, responder="", message="", reference_numb
             record["transcript"].append({"speaker": record["institution"] if company_reply else "Lastly", "message": message})
         if status in TERMINAL:
             record.update(message=message, reference_number=reference_number, required_documents=list(required_documents or []))
+        if status == "failed":
+            record["failure_reason"] = message or "The agent reported that the request could not be delivered."
         write_json(_path(), records)
         return public(record)

@@ -92,7 +92,7 @@ def generate_letter(account: dict[str, Any], persona: dict[str, Any], *, use_llm
         facts = {"account": {"institution": account.get("institution"), "action": account.get("action")},
                  "persona": {"name": persona.get("name"), "date_of_death": persona.get("date_of_death")}}
         try:
-            letter = llm.complete(SYSTEM, json.dumps(facts), max_tokens=650).strip()
+            letter = llm.complete(SYSTEM, json.dumps(facts), max_tokens=4000).strip()
             if _valid(letter, account, persona):
                 return letter
         except (RuntimeError, ValueError, TypeError):

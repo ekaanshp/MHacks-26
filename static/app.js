@@ -179,7 +179,7 @@
   }
 
   function screen(id) {
-    ["signin-screen", "plan-screen", "welcome-screen", "loading-screen", "dashboard"].forEach((name) => { $(name).hidden = name !== id; });
+    ["signin-screen", "upload-screen", "import-review-screen", "plan-screen", "welcome-screen", "loading-screen", "dashboard"].forEach((name) => { $(name).hidden = name !== id; });
     window.scrollTo({ top: 0, behavior: "instant" });
   }
 
@@ -201,6 +201,7 @@
 
   function personalize(estate) {
     const persona = estate.persona || {};
+    state.personaName = persona.name || state.personaName;
     state.pronoun = persona.pronoun === "he" ? "he" : "she";
     applyPronouns(document.body);
     const name = persona.name || "Your loved one";
@@ -213,24 +214,64 @@
     selected.textContent = `${first} chose to share her account information with her family when the time came.`;
     document.querySelector(".welcome>.eyebrow").textContent = `${first}’s family hub`;
     document.querySelector(".persona-monogram").firstChild.textContent = first.charAt(0).toUpperCase();
+    $("ask-input").placeholder = `Did ${first} have life insurance?`;
+  }
+
+  const providerNames = { gmail: "Gmail", icloud: "iCloud Mail", yahoo: "Yahoo Mail", other: "email" };
+  function showConnection(connection) {
+    const first = firstName();
+    const imported = Boolean(connection && connection.imported);
+    $("plan-advance-card").hidden = imported;
+    $("plan-upload-card").classList.toggle("selected", imported);
+    $("plan-upload-card").querySelector(".selected-check").hidden = !imported;
+    $("plan-upload").hidden = imported;
+    $("plan-upload-text").textContent = imported
+      ? `${connection.imported_by || "Your family"} uploaded ${first}’s ${providerNames[connection.provider] || "email"} export${connection.imported_at ? ` on ${date(connection.imported_at)}` : ""}. It is stored encrypted on this computer.`
+      : "Use a downloaded copy of a Gmail, iCloud or Yahoo mailbox. Lastly reads the file and finds the accounts in it.";
+    $("welcome-intro").textContent = imported
+      ? `We’ll read ${first}’s mailbox, find her accounts, and help your family see what needs attention.`
+      : `We’ll read ${first}’s inbox and bank statement, find her accounts, and help your family see what needs attention.`;
+    if (imported) {
+      $("welcome-persona").textContent = `${number(connection.messages)} emails from ${first}’s mailbox are ready`;
+      document.querySelector(".welcome-source div>span").textContent = `${providerNames[connection.provider] || "Email"} export · Uploaded by ${connection.imported_by || "the family"}`;
+    }
   }
 
   async function analyze() {
     $("analyze-error").hidden = true;
     $("analyze-button").disabled = true;
+    // Will Claude read this inbox now? Then show what it is reading while it works.
+    let aiRun = null;
+    if (!demo) {
+      try {
+        const health = await api("/api/health");
+        const method = state.estate && state.estate.analysis ? state.estate.analysis.method : "";
+        const known = state.pending || (state.estate && state.estate.stats) || {};
+        if (health.ai_analysis && method !== "anthropic") aiRun = { emails: known.emails || 0, senders: known.senders || 0 };
+      } catch (_) { /* The analysis request below reports any problem. */ }
+    }
     screen("loading-screen");
     const started = performance.now();
     const minDuration = reducedMotion ? 0 : demo ? 3000 : 2200;
     const steps = document.querySelectorAll(".analysis-steps span");
     let finishedEstate = null;
     const updateProgress = () => {
-      const fraction = Math.min(.91, (performance.now() - started) / Math.max(2200, minDuration));
+      // AI analysis of an uploaded mailbox takes about a minute; pace the bar to match.
+      const expected = aiRun ? (aiRun.emails > 2000 ? 70000 : 25000) : Math.max(2200, minDuration);
+      const fraction = Math.min(.95, (performance.now() - started) / expected);
       $("progress-fill").value = Math.max(4, fraction * 100);
       const step = fraction < .34 ? 0 : fraction < .68 ? 1 : 2;
       steps.forEach((item, i) => item.classList.toggle("active", i <= step));
       $("analysis-message").textContent = ["Reading the inbox and bank statement…", "Finding accounts and checking the evidence…", "Bringing the next steps together for your family…"][step];
       const estate = finishedEstate || state.estate;
-      if (estate && estate.stats) {
+      if (aiRun && !finishedEstate) {
+        // Claude is reading: show the real inbox size and what it is doing, not a placeholder count.
+        $("email-counter").textContent = aiRun.emails ? number(aiRun.emails) : "—";
+        $("sender-counter").textContent = aiRun.senders ? number(aiRun.senders) : "—";
+        $("account-counter").textContent = "…";
+        const seconds = (performance.now() - started) / 1000;
+        $("analysis-message").textContent = seconds < 6 ? `Claude is sorting every sender into accounts and everything else…` : seconds < 20 ? `Claude is reading the account emails closely and checking each amount against its source…` : `Still reading. A large mailbox takes about a minute. Every finding will link to its email.`;
+      } else if (estate && estate.stats) {
         $("email-counter").textContent = number(Math.floor(estate.stats.emails * Math.min(1, fraction * 1.3)));
         $("sender-counter").textContent = number(Math.floor(estate.stats.senders * Math.min(1, fraction * 1.2)));
         $("account-counter").textContent = number(Math.floor(estate.accounts.length * Math.max(0, (fraction - .25) / .65)));
@@ -240,9 +281,12 @@
     updateProgress();
     const timer = setInterval(updateProgress, 100);
     try {
-      const result = await api(demoPath("/api/analyze"), { method: "POST" });
+      // An estate with its final analysis just opens; only a real (re)analysis uses the rate-limited endpoint.
+      const saved = !demo && !aiRun && state.estate && Array.isArray(state.estate.accounts) && state.estate.analysis;
+      const result = saved ? await api("/api/estate") : await api(demoPath("/api/analyze"), { method: "POST" });
       if (!Array.isArray(result.accounts)) throw new Error("The estate is missing its accounts. Please try reading the inbox again.");
       finishedEstate = result;
+      state.pending = null;
       await new Promise((resolve) => setTimeout(resolve, Math.max(0, minDuration - (performance.now() - started))));
       state.estate = result;
       clearInterval(timer);
@@ -271,15 +315,9 @@
     $("persona-name").textContent = name;
     $("persona-avatar").textContent = name.charAt(0).toUpperCase();
     $("persona-detail").textContent = [persona.city, persona.date_of_death ? `Remembering her since ${date(persona.date_of_death, { year: undefined })}` : ""].filter(Boolean).join(" · ");
-    $("estate-description").textContent = `We found ${number(estate.accounts.length)} accounts in ${first}’s information. Here’s where to begin.`;
-    renderSummary();
-    loadProgress();
     loadFamily();
-    renderUrgent();
-    renderDiscovery();
-    renderTabs();
-    renderLedger();
-    renderCoverage();
+    loadConnection();
+    renderEstateSections();
   }
 
   // The deceased person's relatives; the chosen one is credited for changes in Neon.
@@ -313,6 +351,7 @@
     const executorName = (relatives.find((person) => person.executor) || relatives[0]).name;
     $("connected-for").textContent = `Connected for ${executorName}`;
     $("family-avatars").setAttribute("aria-label", `Family members ${relatives.map((person) => person.name).join(" and ")}`);
+    $("family-avatars").hidden = false;
     $("family-avatars").replaceChildren(...relatives.slice(0, 3).map((person, index) => element("span", `avatar ${index % 2 ? "avatar-peach" : "avatar-sage"}`, person.name.charAt(0).toUpperCase())));
     if (!$("switch-person")) {
       const switcher = button("Switch person", "text-button", () => { location.href = "/"; });
@@ -327,25 +366,22 @@
     let fresh;
     try { fresh = await api("/api/estate", {}, false); } catch (_) { return; }
     if (!fresh || !Array.isArray(fresh.accounts)) return;
-    const changed = [];
-    fresh.accounts.forEach((account) => {
-      const index = state.estate.accounts.findIndex((item) => item.id === account.id);
-      if (index === -1) return;
-      const old = state.estate.accounts[index];
-      if (old.status !== account.status || (old.assigned_to || "") !== (account.assigned_to || "")) {
-        state.estate.accounts[index] = account;
-        changed.push(account);
-      }
-    });
-    if (!changed.length) return;
-    renderLedger(); renderTabs(); renderUrgent(); loadActivity(); loadProgress();
+    const before = new Map(state.estate.accounts.map((account) => [account.id, JSON.stringify(account)]));
+    const changed = fresh.accounts.filter((account) => before.get(account.id) !== JSON.stringify(account));
+    if (!changed.length && fresh.accounts.length === state.estate.accounts.length) return;
+    state.estate = fresh;
+    renderEstateSections();
     const open = changed.find((account) => account.id === state.currentAccount);
-    if (open) {
+    if (open && !$("drawer-shell").hidden) {
       const status = $("account-status");
       const assigned = $("account-assignment");
       if (status) status.value = open.status;
       if (assigned) assigned.value = open.assigned_to || "";
+      // Refresh the open drawer's shared sections unless the family member is typing in it.
+      const typing = $("account-drawer").contains(document.activeElement) && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+      if (!typing && !state.voice) { const top = $("account-drawer").scrollTop; openAccount(open.id); $("account-drawer").scrollTop = top; }
     }
+    if (!changed.length) return;
     let who = "Your family";
     try {
       const latest = (await api("/api/activity", {}, false)).activity || [];
@@ -386,14 +422,15 @@
     }));
     const facts = [
       [number(stats.emails), "emails reviewed"],
-      [number(state.estate.accounts.length), "accounts found"],
-      [number(totals.death_certificates), "death certificate copies to plan for"]
+      [number(visibleAccounts().length), "accounts found"],
+      [number(totals.death_certificates), "death certificate copies to plan for"],
+      [state.estate.analysis && state.estate.analysis.method === "anthropic" ? "Claude" : "Local rules", "found these accounts"]
     ];
     $("estate-facts").replaceChildren(...facts.map(([value, label]) => append(element("span"), element("strong", "", value), document.createTextNode(` ${label}`))));
   }
 
   function renderUrgent() {
-    const accounts = state.estate.accounts.filter((account) => account.urgent && account.active && account.status !== "done");
+    const accounts = visibleAccounts().filter((account) => account.urgent && account.active && account.status !== "done");
     const account = accounts.find((item) => /prime/i.test(item.institution)) || accounts[0];
     const container = $("urgent-alert");
     container.hidden = !account;
@@ -404,7 +441,7 @@
   }
 
   function renderDiscovery() {
-    const insurance = state.estate.accounts.filter((account) => account.category === "insurance" && account.action === "claim" && Number(account.amount) > 0).sort((a, b) => b.amount - a.amount)[0];
+    const insurance = visibleAccounts().filter((account) => account.category === "insurance" && account.action === "claim" && Number(account.amount) > 0).sort((a, b) => b.amount - a.amount)[0];
     const container = $("discovery-card");
     container.hidden = !insurance;
     if (!insurance) return;
@@ -419,7 +456,7 @@
   function renderTabs() {
     const options = [{ id: "all", title: "All accounts" }, ...buckets];
     $("account-tabs").replaceChildren(...options.map((option) => {
-      const count = option.id === "all" ? state.estate.accounts.length : state.estate.accounts.filter((item) => item.bucket === option.id).length;
+      const count = option.id === "all" ? visibleAccounts().length : visibleAccounts().filter((item) => item.bucket === option.id).length;
       const node = button(option.title, `account-tab ${state.bucket === option.id ? "active" : ""}`, () => {
         state.bucket = option.id;
         renderTabs();
@@ -440,7 +477,7 @@
   }
 
   function renderLedger() {
-    const accounts = state.estate.accounts;
+    const accounts = visibleAccounts();
     const open = accounts.filter((account) => account.status !== "done").length;
     $("account-count").textContent = `${open} to review · ${accounts.length - open} completed`;
     $("ledger").replaceChildren();
@@ -464,7 +501,11 @@
         if (account.active === false) info.append(element("p", "inactive-label", `Stopped charging in ${String(account.last_seen || "").slice(0, 4) || "an earlier year"}`));
         else info.append(element("p", "", account.why_it_matters));
         const meta = element("div", "account-meta");
-        (account.sources || []).forEach((source) => meta.append(element("span", "source-badge", source === "bank" ? "Bank statement" : "Email")));
+        (account.sources || []).forEach((source) => meta.append(element("span", source === "family" ? "family-badge" : "source-badge", source === "bank" ? "Bank statement" : source === "family" ? `Added by ${account.added_by || "the family"}` : "Email")));
+        if (account.original) meta.append(element("span", "edited-badge", "Edited by the family"));
+        if (account.needs_review) meta.append(element("span", "check-badge", "Check this"));
+        const openFollowups = (account.followups || []).filter((item) => !item.done).length;
+        if (openFollowups) meta.append(element("span", "source-badge", `${openFollowups} follow-up${openFollowups === 1 ? "" : "s"}`));
         if (account.urgent && account.active && account.status !== "done") meta.append(element("span", "renewal-badge", account.days_until >= 0 ? `Due ${account.days_until === 0 ? "today" : `in ${account.days_until}d`}` : "Needs attention"));
         info.append(meta);
         const value = accountValue(account);
@@ -476,16 +517,28 @@
       $("ledger").append(section);
     });
     if (!$("ledger").children.length) $("ledger").append(element("p", "empty-activity", "No accounts in this section were found in the available records."));
+    const dismissed = state.estate.accounts.filter(isDismissed);
+    if (dismissed.length && state.bucket === "all") {
+      const details = element("details", "dismissed-section");
+      details.append(element("summary", "", `Dismissed as not an account (${dismissed.length})`));
+      dismissed.forEach((account) => {
+        const row = element("div", "dismissed-row");
+        append(row, element("span", "", `${account.institution} · ${(account.review || {}).reason || "Not an account"}${(account.review || {}).by ? ` · ${(account.review || {}).by}` : ""}`),
+          button("Restore", "text-button", () => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/review`, { method: "POST", body: JSON.stringify({ state: "open" }) }), `${account.institution} restored.`)));
+        details.append(row);
+      });
+      $("ledger").append(details);
+    }
   }
 
   function renderCoverage() {
     const hasBank = state.estate.accounts.some((account) => account.sources && account.sources.includes("bank"));
     const checklist = [
-      { title: `Email (${number((state.estate.stats || {}).emails)} messages)`, checked: true },
-      { title: "Chase bank statement", checked: hasBank, note: hasBank ? "Matched charges with email accounts and checked for recurring payments." : "Add a bank statement to find charges that don’t appear in email." },
+      { title: `Email (${number((state.estate.stats || {}).emails)} messages)`, checked: true, mailbox: true },
+      { title: "Bank statement", checked: hasBank, note: hasBank ? "Matched charges with email accounts and checked for recurring payments." : "Add a bank statement to find charges that don’t appear in email." },
       { title: "Credit report", note: "Request from the credit bureaus as executor." },
       { title: "Lost life insurance", note: "NAIC Life Insurance Policy Locator." },
-      { title: "Unclaimed property", note: "MissingMoney.com and Michigan Unclaimed Property." },
+      { title: "Unclaimed property", note: "MissingMoney.com and the state unclaimed property office." },
       { title: "Last year’s tax return", note: "Every 1099 is an account worth checking." }
     ];
     $("coverage-list").replaceChildren(...checklist.map((item) => {
@@ -493,6 +546,25 @@
       const icon = element("span", "coverage-check", item.checked ? "✓" : "");
       icon.setAttribute("aria-label", item.checked ? "Reviewed" : "Still to review");
       const content = append(element("div"), element("strong", "", item.title), item.note ? element("p", "", item.note) : null);
+      const connection = state.connection;
+      if (item.mailbox && connection) {
+        const providers = { gmail: "Gmail (Google Takeout)", icloud: "iCloud Mail", yahoo: "Yahoo Mail", other: "Mailbox file", demo: "Synthetic demo mailbox" };
+        const range = connection.first_date ? `${date(connection.first_date)} – ${date(connection.last_date)}` : "";
+        const detail = [providers[connection.provider] || "Mailbox", range, connection.imported_at ? `uploaded ${date(connection.imported_at)}${connection.imported_by ? ` by ${connection.imported_by}` : ""}` : ""].filter(Boolean).join(" · ");
+        content.append(element("p", "", detail));
+        if (connection.removable) {
+          const manage = element("div", "mailbox-manage");
+          manage.append(button("Delete this mailbox and its estate", "text-button", async () => {
+            if (!window.confirm(`Delete ${state.estate.persona.name}’s uploaded mailbox and everything Lastly found in it? This cannot be undone.`)) return;
+            try {
+              await api("/api/import", { method: "DELETE" });
+              toast("The uploaded mailbox was deleted.");
+              setTimeout(() => { location.href = "/"; }, 900);
+            } catch (error) { toast(errorMessage(error)); }
+          }));
+          content.append(manage);
+        }
+      }
       return append(row, icon, content);
     }));
   }
@@ -521,8 +593,23 @@
         else if (entry.action === "claim:opened") action = `opened a claim for ${institution}`;
         else if (entry.action === "claim:rejected") action = `could not open a claim for ${institution}`;
         else if (entry.action === "call:browser") action = `talked with ${institution} (AI conversation)`;
-        else if (String(entry.action).startsWith("assigned:")) action = `assigned ${institution} to ${entry.action.slice(9) || "the family"}`;
-        else action = `${String(entry.action || "updated").replace(/[_:]/g, " ")} · ${institution}`;
+        else if (String(entry.action).startsWith("assigned:")) action = entry.action === "assigned:Unassigned" ? `unassigned ${institution}` : `assigned ${institution} to ${entry.action.slice(9) || "the family"}`;
+        else {
+          const [kind, value = ""] = String(entry.action || "").split(/:(.*)/s);
+          const outcomes = { completed: "confirmed it’s done", accepted: "opened the request", documents_required: "asked for documents", declined: "declined the request", unclear: "gave no clear answer" };
+          action = {
+            note: `left a note on ${institution}`,
+            help: `asked for help with ${institution}`,
+            handoff: `handed ${institution} to ${value}`,
+            added: `added ${institution}`,
+            corrected: `corrected the details of ${institution}`,
+            review: value === "dismissed" ? `dismissed ${institution} as not an account` : value === "confirmed" ? `confirmed ${institution}` : `reopened ${institution} for review`,
+            followup: value === "done" ? `completed a follow-up for ${institution}` : value === "reopened" ? `reopened a follow-up for ${institution}` : `added a follow-up for ${institution}`,
+            document: `marked a document ${value.replace("_", " ")} for ${institution}`,
+            outcome: `recorded that ${institution} ${outcomes[value] || "answered"}`,
+          }[kind] || (kind === "note" && value === "resolved" ? `picked up a help request on ${institution}` : `${String(entry.action || "updated").replace(/[_:]/g, " ")} · ${institution}`);
+          if (kind === "note" && value === "resolved") action = `picked up a help request on ${institution}`;
+        }
         const actor = entry.actor || "Your family";
         const time = element("time", "", relativeTime(entry.created_at));
         if (entry.created_at) time.dateTime = entry.created_at;
@@ -595,17 +682,237 @@
     const value = accountValue(account);
     append(content, append(element("div", "drawer-top-amount", value.value), element("span", "", value.unit)));
     if (account.active === false) content.append(element("p", "drawer-source-line", `Stopped charging in ${String(account.last_seen).slice(0, 4)}. We found no recent recurring charge in the available records.`));
-    if (account.sources && account.sources.length === 1 && account.sources[0] === "bank") content.append(element("p", "drawer-source-line", "No emails. Found only on her Chase statement."));
+    if (account.sources && account.sources.length === 1 && account.sources[0] === "bank") content.append(element("p", "drawer-source-line", "No emails. Found only on her bank statement."));
     else content.append(element("p", "drawer-source-line", [account.email_count ? `${account.email_count} email${account.email_count === 1 ? "" : "s"}` : null, account.first_seen ? `First seen ${date(account.first_seen)}` : null, account.last_seen ? `Last seen ${date(account.last_seen)}` : null].filter(Boolean).join(" · ")));
+    renderAccountReview(content, account);
     renderStateForm(content, account, generation);
+    const guideSection = drawerSection("How to handle it");
+    content.append(guideSection);
+    renderGuide(guideSection, account, generation);
     const proof = drawerSection("The information behind this");
-    append(proof, element("p", "", "Read the original source before taking the next step."));
+    append(proof, element("p", "", (account.evidence_ids || []).length ? "Read the original source before taking the next step." : "The family added this account, so there is no discovered record. Check it against a statement."));
     content.append(proof);
     renderEvidence(proof, account.evidence_ids || [], preferredEvidence, generation);
     const actions = drawerSection(actionLabels[account.action] || "Take the next step");
     append(actions, element("p", "", "We can help with a first draft or an approved call. Your family chooses what to send and when."));
     content.append(actions);
     renderActions(actions, account, generation);
+    const history = drawerSection("Follow-ups and history");
+    content.append(history);
+    renderTimeline(history, account, generation);
+    const notes = drawerSection("Notes and handoffs");
+    content.append(notes);
+    renderNotes(notes, account);
+  }
+
+  function renderAccountReview(parent, account) {
+    const flags = element("div", "drawer-flags");
+    const review = account.review || {};
+    if (isDismissed(account)) flags.append(element("span", "drawer-flag warn", `Dismissed as not an account${review.by ? ` by ${review.by}` : ""}`));
+    else if (account.needs_review) flags.append(element("span", "drawer-flag warn", "Found in thin evidence. Check it before acting."));
+    else if (review.state === "confirmed" && !(account.sources || []).includes("family")) flags.append(element("span", "drawer-flag", `Confirmed${review.by ? ` by ${review.by}` : ""}`));
+    if ((account.sources || []).includes("family")) flags.append(element("span", "drawer-flag", `Added by ${account.added_by || "the family"}`));
+    if (account.original) {
+      const was = Object.entries(account.original).map(([field, value]) => field === "amount" ? (value === null ? "no amount" : money(value, true)) : field === "category" ? categoryLabels[value] || value : field === "frequency" ? (frequencyLabels[value] || value).toLowerCase() : value).join(", ");
+      flags.append(element("span", "drawer-flag", `Corrected${(account.corrections || {}).by ? ` by ${account.corrections.by}` : ""} · was ${was}`));
+    }
+    const controls = element("div", "drawer-inline-actions");
+    const error = element("p", "inline-error"); error.hidden = true;
+    const reviewTo = (body, message) => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/review`, { method: "POST", body: JSON.stringify(body) }), message, error);
+    if (isDismissed(account)) controls.append(button("Restore this account", "text-button", () => reviewTo({ state: "open" }, `${account.institution} restored.`)));
+    else {
+      if (account.needs_review) controls.append(button("Looks right", "text-button", () => reviewTo({ state: "confirmed" }, `${account.institution} confirmed.`)));
+      const editButton = button("Correct details", "text-button", () => { editButton.hidden = true; renderCorrectForm(controls, account, () => { editButton.hidden = false; }); });
+      controls.append(editButton);
+      if (account.original) controls.append(button("Undo corrections", "text-button", () => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/correct`, { method: "POST", body: JSON.stringify({ reset: true }) }), "The discovered details are back.", error)));
+      controls.append(button("Not an account", "text-button", () => {
+        const reason = window.prompt("Why isn’t this an account? (optional)", "Not an account");
+        if (reason === null) return;
+        reviewTo({ state: "dismissed", reason: reason.trim().slice(0, 300) || "Not an account" }, `${account.institution} dismissed. Restore it from the bottom of the account list.`);
+      }));
+    }
+    append(parent, flags.children.length ? flags : null, controls, error);
+  }
+
+  function renderCorrectForm(parent, account, onClose) {
+    const form = element("form", "correct-form");
+    const discovered = { ...account, ...(account.original || {}) };
+    const name = inputField(`fix-institution-${account.id}`, "Company name", { value: account.institution, maxLength: 150 });
+    name.wrapper.className = "wide";
+    const amount = inputField(`fix-amount-${account.id}`, "Amount", { type: "number", min: "0", step: "0.01", value: account.amount === null ? "" : String(account.amount) });
+    const frequency = selectField(`fix-frequency-${account.id}`, "Billing", Object.entries(frequencyLabels), account.frequency);
+    const category = selectField(`fix-category-${account.id}`, "Kind of account", Object.entries(categoryLabels), account.category);
+    category.wrapper.className = "wide";
+    const error = element("p", "inline-error"); error.hidden = true; error.setAttribute("role", "alert");
+    const save = button("Save correction", "button button-primary mini-button"); save.type = "submit";
+    append(form, name.wrapper, amount.wrapper, frequency.wrapper, category.wrapper, append(element("div", "form-actions"), save, button("Cancel", "text-button", () => { form.remove(); onClose(); }), error),
+      element("p", "review-note wide", `Discovered as ${discovered.institution}${discovered.amount !== null && discovered.amount !== undefined ? `, ${money(discovered.amount, true)}` : ""}. The original stays on record.`));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const body = {};
+      if (name.input.value.trim() && name.input.value.trim() !== account.institution) body.institution = name.input.value.trim();
+      if (amount.input.value !== "" && Number(amount.input.value) !== account.amount) body.amount = Number(amount.input.value);
+      if (frequency.select.value !== account.frequency) body.frequency = frequency.select.value;
+      if (category.select.value !== account.category) body.category = category.select.value;
+      if (!Object.keys(body).length) { showError(error, "Change a detail first, or cancel."); return; }
+      save.disabled = true;
+      const saved = await workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/correct`, { method: "POST", body: JSON.stringify(body) }), "Correction saved for the family.", error);
+      if (!saved) save.disabled = false;
+    });
+    parent.after(form);
+    name.input.focus();
+  }
+
+  async function renderGuide(parent, account, generation) {
+    const holder = element("div");
+    holder.append(element("p", "loading-text", "Preparing the steps…"));
+    parent.append(holder);
+    let guide;
+    try { guide = await api(`/api/account/${encodeURIComponent(account.id)}/guide`, { signal: state.drawerAbort.signal }, false); }
+    catch (error) { if (generation === state.drawerGeneration && error.name !== "AbortError") holder.replaceChildren(element("p", "inline-error", errorMessage(error))); return; }
+    if (generation !== state.drawerGeneration) return;
+    const contact = element("div", "guide-contact");
+    contact.append(element("strong", "", guide.contact.verified ? "Verified contact route: " : "Contact route: "), document.createTextNode(guide.contact.label));
+    if (guide.contact.url) {
+      const link = element("a", "", ` ${guide.contact.url.replace(/^https?:\/\//, "")}`);
+      link.href = guide.contact.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+      contact.append(link);
+    }
+    const steps = element("ol", "guide-steps");
+    guide.steps.forEach((step) => steps.append(element("li", "", step)));
+    const docs = element("div");
+    docs.append(element("strong", "field-label", "Documents for this institution"));
+    guide.documents.forEach((item) => {
+      const row = element("div", `doc-row ${item.status}`);
+      const select = element("select");
+      select.setAttribute("aria-label", `${item.name} status`);
+      [["needed", "Still needed"], ["ready", "Ready"], ["sent", "Sent"], ["not_needed", "Not needed"]].forEach(([value, text]) => { const option = element("option", "", text); option.value = value; select.append(option); });
+      select.value = item.status;
+      select.addEventListener("change", async () => {
+        select.disabled = true;
+        try {
+          await api(`/api/account/${encodeURIComponent(account.id)}/documents`, { method: "POST", body: JSON.stringify({ name: item.name, status: select.value }) });
+          row.className = `doc-row ${select.value}`;
+          toast(`${item.name}: ${select.options[select.selectedIndex].text.toLowerCase()}.`);
+          refreshEstate().catch(() => {});
+        } catch (error) { toast(errorMessage(error)); select.value = item.status; }
+        finally { select.disabled = false; }
+      });
+      docs.append(append(row, element("span", "", item.name), select));
+    });
+    const packet = button("Download document packet ↓", "button button-secondary mini-button", async () => {
+      packet.disabled = true;
+      try {
+        const result = await api(demoPath(`/api/account/${encodeURIComponent(account.id)}/packet`), {}, false);
+        saveBlob(new Blob([result.html], { type: "text/html;charset=utf-8" }), result.filename);
+        toast("Packet downloaded: letter, checklist and supporting records.");
+      } catch (error) { toast(errorMessage(error)); }
+      finally { packet.disabled = false; }
+    });
+    holder.replaceChildren(element("p", "guide-goal", guide.goal), contact, steps, docs, append(element("div", "drawer-actions"), packet));
+  }
+
+  async function renderTimeline(parent, account, generation) {
+    const list = element("ul", "timeline");
+    const today = state.estate.today;
+    const entries = [];
+    const outcome = account.outcome;
+    if (outcome) entries.push({ at: outcome.at, node: (() => {
+      const item = element("li", `outcome-${outcome.result}`);
+      append(item, element("time", "", `${date(outcome.at)} · ${{ call: "Phone call", voice: "Voice conversation", agent: "Agent conversation", claim: "Insurer agent" }[outcome.source] || "Company answer"}`),
+        element("strong", "", outcomeLabels[outcome.result] || "Company answer"), document.createTextNode(` ${outcome.text || ""}`));
+      if (outcome.reference_number) item.append(element("div", "reference", `Reference ${outcome.reference_number}`));
+      return item;
+    })() });
+    (account.followups || []).forEach((followup) => {
+      const overdue = !followup.done && followup.due && followup.due < today;
+      const item = element("li", overdue ? "overdue" : "");
+      const line = element("label", `followup-line ${followup.done ? "done" : ""}`);
+      const box = element("input");
+      box.type = "checkbox"; box.checked = Boolean(followup.done);
+      box.setAttribute("aria-label", `Mark “${followup.title}” ${followup.done ? "not done" : "done"}`);
+      box.addEventListener("change", () => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/followups/${encodeURIComponent(followup.id)}`, { method: "PATCH", body: JSON.stringify({ done: box.checked }) }), box.checked ? "Follow-up done." : "Follow-up reopened."));
+      append(line, box, element("span", "", followup.title));
+      const meta = [followup.due ? `${overdue ? "Overdue · was due" : "Due"} ${date(followup.due)}` : "No due date", followup.reference ? `Ref ${followup.reference}` : "", followup.created_by ? `added by ${followup.created_by}` : ""].filter(Boolean).join(" · ");
+      append(item, element("time", "", meta), line);
+      entries.push({ at: followup.created_at, node: item });
+    });
+    let calls = [];
+    try { calls = (await api(`/api/account/${encodeURIComponent(account.id)}/calls`, { signal: state.drawerAbort.signal }, false)).calls || []; } catch (_) { /* Call history is optional. */ }
+    if (generation !== state.drawerGeneration) return;
+    calls.forEach((call) => {
+      const result = call.summary && call.summary.result;
+      const item = element("li", result ? `outcome-${result}` : "");
+      append(item, element("time", "", `${date(call.created_at)} · ${call.mode === "browser" ? "Voice conversation" : "Phone call"}`),
+        element("strong", "", call.status === "done" ? (outcomeLabels[result] || "Finished") : call.status === "failed" ? "Did not complete" : "In progress"),
+        document.createTextNode(call.transcript_summary ? ` ${call.transcript_summary}` : ""));
+      if (call.summary && call.summary.reference_number) item.append(element("div", "reference", `Reference ${call.summary.reference_number}`));
+      entries.push({ at: call.created_at, node: item });
+    });
+    entries.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    if (entries.length) entries.forEach((entry) => list.append(entry.node));
+    else list.append(element("li", "", "Nothing yet. Calls, company answers and promised callbacks will appear here."));
+    const addButton = button("+ Add a follow-up", "text-button", () => { addButton.hidden = true; renderFollowupForm(parent, account, () => { addButton.hidden = false; }); });
+    append(parent, list, addButton);
+  }
+
+  function renderFollowupForm(parent, account, onClose) {
+    const form = element("form", "mini-form");
+    const title = inputField(`followup-title-${account.id}`, "What needs to happen", { maxLength: 300, placeholder: "e.g. The bank promised a callback about the estate account" });
+    title.wrapper.className = "wide";
+    const kind = selectField(`followup-kind-${account.id}`, "Kind", [["callback", "Promised callback"], ["document", "Send documents"], ["reply", "Waiting for a reply"], ["deadline", "Deadline"], ["other", "Other"]], "callback");
+    const due = inputField(`followup-due-${account.id}`, "Due date", { type: "date" });
+    const reference = inputField(`followup-ref-${account.id}`, "Reference number (optional)", { maxLength: 60 });
+    reference.wrapper.className = "wide";
+    const error = element("p", "inline-error"); error.hidden = true; error.setAttribute("role", "alert");
+    const save = button("Add follow-up", "button button-primary mini-button"); save.type = "submit";
+    append(form, title.wrapper, kind.wrapper, due.wrapper, reference.wrapper, append(element("div", "form-actions"), save, button("Cancel", "text-button", () => { form.remove(); onClose(); }), error));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!title.input.value.trim()) { showError(error, "Describe the follow-up."); title.input.focus(); return; }
+      save.disabled = true;
+      const body = { title: title.input.value.trim(), kind: kind.select.value };
+      if (due.input.value) body.due = due.input.value;
+      if (reference.input.value.trim()) body.reference = reference.input.value.trim();
+      const saved = await workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/followups`, { method: "POST", body: JSON.stringify(body) }), "Follow-up added.", error);
+      if (!saved) save.disabled = false;
+    });
+    parent.append(form);
+    title.input.focus();
+  }
+
+  function renderNotes(parent, account) {
+    const notes = [...(account.notes || [])].reverse();
+    if (!notes.length) parent.append(element("p", "", "Leave a note for the family, ask for help, or hand this account to someone else."));
+    notes.forEach((note) => {
+      const card = element("div", `note-card ${note.kind === "help" ? "help" : ""} ${note.resolved ? "resolved" : ""}`);
+      const label = note.kind === "handoff" ? `Handed to ${note.to}` : note.kind === "help" ? (note.resolved ? `Asked for help · resolved by ${note.resolved_by}` : "Asked for help") : "Note";
+      append(card, element("div", "note-meta", `${note.author} · ${label} · ${date(note.created_at)}`), element("div", "", note.text));
+      if (note.kind === "help" && !note.resolved) card.append(button("I’ve got this", "text-button", () => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/notes/${encodeURIComponent(note.id)}/resolve`, { method: "POST" }), "Thanks for picking this up.")));
+      parent.append(card);
+    });
+    const form = element("form", "mini-form");
+    const text = inputField(`note-text-${account.id}`, "Your note", { multiline: true, maxLength: 1500, placeholder: "What should the family know?" });
+    text.wrapper.className = "wide";
+    const relatives = (state.family && state.family.relatives || []).filter((person) => person.name !== state.actor);
+    const kind = selectField(`note-kind-${account.id}`, "Type", [["note", "Note for the family"], ["help", "Ask for help"], ...(relatives.length ? [["handoff", "Hand off to…"]] : [])], "note");
+    const to = selectField(`note-to-${account.id}`, "Hand off to", relatives.map((person) => [person.name, `${person.name} (${person.relationship})`]));
+    to.wrapper.hidden = true;
+    kind.select.addEventListener("change", () => { to.wrapper.hidden = kind.select.value !== "handoff"; });
+    const error = element("p", "inline-error"); error.hidden = true; error.setAttribute("role", "alert");
+    const save = button("Save note", "button button-primary mini-button"); save.type = "submit";
+    append(form, text.wrapper, kind.wrapper, to.wrapper, append(element("div", "form-actions"), save, error));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!text.input.value.trim()) { showError(error, "Write a note first."); text.input.focus(); return; }
+      save.disabled = true;
+      const body = { text: text.input.value.trim(), kind: kind.select.value };
+      if (body.kind === "handoff") body.to = to.select.value;
+      const message = body.kind === "handoff" ? `Handed to ${body.to}. They’ll see your note.` : body.kind === "help" ? "Help request shared with the family." : "Note saved for the family.";
+      const saved = await workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/notes`, { method: "POST", body: JSON.stringify(body) }), message, error);
+      if (!saved) save.disabled = false;
+    });
+    parent.append(form);
   }
 
   function renderStateForm(parent, account, generation) {
@@ -658,14 +965,8 @@
     const response = await api(`/api/account/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(changes) });
     const updated = response.account || response;
     if (!updated.id) throw new Error("The account update was incomplete. Please refresh and check its progress.");
-    const index = state.estate.accounts.findIndex((item) => item.id === id);
-    if (index !== -1) state.estate.accounts[index] = updated;
-    renderLedger();
-    renderUrgent();
-    renderTabs();
-    loadActivity();
-    loadProgress();
-    return updated;
+    try { await refreshEstate(); } catch (_) { /* The saved change stands; the next sync redraws it. */ }
+    return state.estate.accounts.find((item) => item.id === id) || updated;
   }
 
   function renderEvidence(parent, ids, preferred, generation) {
@@ -687,8 +988,8 @@
         if (generation !== state.drawerGeneration || selection !== latestSelection) return;
         card.replaceChildren();
         if (id.startsWith("bank_")) {
-          append(card, element("div", "evidence-detail", `Chase bank statement · ${id}`));
-          [["Date", date(source.date)], ["Description", source.description || source.descriptor || ""], ["Amount", money(source.amount, true)], ["Account", source.account || "Chase checking"]].forEach(([label, value]) => card.append(append(element("div", "bank-fact"), element("span", "", label), element("strong", "", value))));
+          append(card, element("div", "evidence-detail", `Bank statement · ${id}`));
+          [["Date", date(source.date)], ["Description", source.description || source.descriptor || ""], ["Amount", money(source.amount, true)], ["Account", source.account || "Checking account"]].forEach(([label, value]) => card.append(append(element("div", "bank-fact"), element("span", "", label), element("strong", "", value))));
         } else {
           let sender = source.from || source.sender || source.from_email || "";
           if (sender && typeof sender === "object") sender = sender.email || sender.address || sender.name || "";
@@ -780,7 +1081,8 @@
       controls.prepend(claimButton);
       api(`/api/claim/${encodeURIComponent(account.id)}`, { signal: state.drawerAbort.signal }, false).then((claim) => {
         if (generation !== state.drawerGeneration || !claim || !claim.status) return;
-        claimButton.hidden = claim.status !== "failed" && claim.status !== "rejected";
+        claimButton.hidden = !["failed", "rejected", "timed_out"].includes(claim.status);
+        if (!claimButton.hidden) claimButton.textContent = "Try the claim again ↗";
         renderClaim(claimContainer, account, claim, generation);
       }).catch(() => { /* No claim yet. */ });
     }
@@ -793,6 +1095,17 @@
       const ongoing = state.calls.get(account.id);
       const callState = renderCallState(callContainer, account, ongoing.status, ongoing.summary);
       if (!["done", "failed"].includes(ongoing.status) && ongoing.conversation_id) pollCall(account, ongoing, callState, generation);
+    } else {
+      // Calls are saved on the server, so a reload or another device still sees them.
+      api(`/api/account/${encodeURIComponent(account.id)}/calls`, { signal: state.drawerAbort.signal }, false).then((history) => {
+        const latest = (history.calls || []).slice(-1)[0];
+        if (!latest || generation !== state.drawerGeneration || callContainer.children.length) return;
+        const ongoing = { conversation_id: latest.conversation_id, status: latest.status, summary: latest.summary || latest.transcript_summary || null };
+        state.calls.set(account.id, ongoing);
+        const callState = renderCallState(callContainer, account, ongoing.status, ongoing.summary);
+        if (!["done", "failed"].includes(ongoing.status)) { callButton.hidden = true; pollCall(account, ongoing, callState, generation); }
+        else callContainer.append(button("Place another approved call", "text-button", () => { callContainer.replaceChildren(); state.calls.delete(account.id); renderCallForm(callContainer, account, generation); }));
+      }).catch(() => { /* No calls yet, or the voice service is not configured. */ });
     }
   }
 
@@ -800,7 +1113,7 @@
     if (generation !== state.drawerGeneration) return;
     clearTimeout(parent.taskPollTimer);
     const container = element("div", "call-state");
-    const titles = { queued: "Waiting for Lastly’s Fetch.ai agent…", sent: "Contacting the company agent…", awaiting_details: "Company agent requested account details…", details_sent: "Waiting for the company’s confirmation…", completed: "Agent request complete", pending: "The family has steps to complete", rejected: "The company agent declined this request", failed: "The agent request could not be delivered" };
+    const titles = { queued: "Waiting for Lastly’s Fetch.ai agent…", sent: "Contacting the company agent…", awaiting_details: "Company agent requested account details…", details_sent: "Waiting for the company’s confirmation…", completed: "Agent request complete", pending: "The family has steps to complete", rejected: "The company agent declined this request", failed: "The agent request could not be delivered", timed_out: "The agents stopped responding" };
     container.append(element("strong", "", titles[task.status] || "Agent conversation in progress"));
     container.append(element("p", "review-note", "Fetch.ai conversation with a demonstration company agent."));
     const transcript = element("div", "voice-transcript");
@@ -812,19 +1125,21 @@
     container.append(transcript);
     if (task.reference_number) container.append(element("p", "reference", `Reference: ${task.reference_number}`));
     if (task.required_documents && task.required_documents.length) container.append(element("p", "", task.required_documents.join(" · ")));
-    const finished = ["completed", "pending", "rejected", "failed"].includes(task.status);
-    if (!finished && waited >= 30) container.append(element("p", "inline-error", "Still waiting for the agents. Check that fetch_agent.py and insurer_agent.py are running."));
-    parent.replaceChildren(container);
-    const target = task.status === "completed" ? "done" : task.status === "pending" ? "in_progress" : null;
-    if (target) {
-      const current = state.estate.accounts.find((item) => item.id === account.id);
-      if (current && current.status !== "done" && current.status !== target) {
-        current.status = target;
-        renderLedger(); renderTabs(); loadActivity(); loadProgress();
-        const select = $("account-status");
-        if (select) select.value = target;
-      }
+    const finished = ["completed", "pending", "rejected", "failed", "timed_out"].includes(task.status);
+    if (task.failure_reason && ["failed", "timed_out"].includes(task.status)) container.append(element("p", "inline-error", task.failure_reason));
+    else if (!finished && waited >= 30) container.append(element("p", "review-note", `Still waiting for the agents. If nothing happens within ${task.deadline_seconds || 90} seconds, Lastly will stop and explain why.`));
+    if (Array.isArray(task.attempts) && task.attempts.length) container.append(element("p", "review-note", `Attempt ${task.attempts.length + 1}. Earlier: ${task.attempts.map((attempt) => (attempt.status || "").replace("_", " ")).join(", ")}.`));
+    if (["failed", "rejected", "timed_out"].includes(task.status)) {
+      const retry = button("Try again ↗", "button button-secondary mini-button", async () => {
+        retry.disabled = true;
+        try { renderAgentTask(parent, account, await api(`/api/agent-task/${encodeURIComponent(account.id)}`, { method: "POST" }), generation); }
+        catch (error) { retry.disabled = false; container.append(element("p", "inline-error", errorMessage(error))); }
+      });
+      container.append(retry);
     }
+    parent.replaceChildren(container);
+    // The server already recorded the company's answer; redraw once when it arrives while watched.
+    if (finished && waited > 0) { showArrivedResult(account.id); return; }
     if (finished) return;
     parent.taskPollTimer = setTimeout(async () => {
       if (generation !== state.drawerGeneration) return;
@@ -951,7 +1266,7 @@
     container.setAttribute("role", "status");
     container.setAttribute("aria-live", "polite");
     const waiting = claim.status === "queued" || claim.status === "sent";
-    const titles = { queued: "Lastly’s agent is preparing the claim…", sent: `Waiting for ${account.institution}’s claims agent…`, opened: `Claim opened · ${claim.claim_number || ""}`, rejected: "The insurer’s agent could not open this claim", failed: "The claim could not be delivered" };
+    const titles = { queued: "Lastly’s agent is preparing the claim…", sent: `Waiting for ${account.institution}’s claims agent…`, opened: `Claim opened · ${claim.claim_number || ""}`, rejected: "The insurer’s agent could not open this claim", failed: "The claim could not be delivered", timed_out: "The insurer’s agent stopped responding" };
     const heading = element("strong", "", titles[claim.status] || "Claim in progress");
     if (waiting) heading.prepend(element("span", "pulse-dot"));
     container.append(heading);
@@ -967,11 +1282,7 @@
     } else if (claim.message) container.append(element("p", "", claim.message));
     else if (waiting && waited >= 45) container.append(element("p", "inline-error", "No answer yet. Check that fetch_agent.py and insurer_agent.py are both running."));
     parent.replaceChildren(container);
-    if (claim.status === "opened") {
-      const current = state.estate.accounts.find((item) => item.id === account.id);
-      loadProgress();
-      if (current && current.status === "open") { current.status = "in_progress"; renderLedger(); renderTabs(); loadActivity(); const select = $("account-status"); if (select) select.value = "in_progress"; }
-    }
+    if (!waiting && waited > 0) { showArrivedResult(account.id); return; }
     if (!waiting || generation !== state.drawerGeneration) return;
     state.pollTimer = setTimeout(async () => {
       if (generation !== state.drawerGeneration) return;
@@ -1190,7 +1501,15 @@
       // The transcript is still being finalized; a provisional result is not shown as a verdict.
       container.append(element("p", "", "Reviewing the conversation. The outcome appears once the transcript is final."));
     } else if (summary && typeof summary === "object") {
-      if (typeof summary.cancelled === "boolean") container.append(element("p", "", summary.cancelled ? "Cancellation confirmed. This account is marked complete." : "The representative did not clearly confirm completed cancellation. If you know it was completed, set Progress to Done above."));
+      const result = summary.result || (summary.cancelled ? "completed" : "unclear");
+      const explanations = {
+        completed: "The company confirmed it is done. This account is marked complete for the family.",
+        accepted: "The company opened the request, but it is not finished. It is marked in progress.",
+        documents_required: "The company needs documents first. They were added to this account’s follow-ups.",
+        declined: "The company could not complete the request. Review the transcript and choose another route.",
+        unclear: "The representative did not clearly confirm the result. If you know it was completed, set Progress to Done above.",
+      };
+      container.append(element("p", "", explanations[result] || explanations.unclear));
       if (summary.reference_number) container.append(element("p", "reference", `Reference: ${summary.reference_number}`));
       const nextSteps = Array.isArray(summary.next_steps) ? summary.next_steps.join(" ") : summary.next_steps;
       if (nextSteps) container.append(element("p", "", nextSteps));
@@ -1206,7 +1525,7 @@
         renderCallForm(parent, account, generation);
       }));
     }
-    else if (status === "done") container.append(element("p", "", "No cancellation confirmation was returned. Review the outcome and update progress manually."));
+    else if (status === "done") container.append(element("p", "", "No confirmation was returned. Review the outcome and update progress manually."));
   }
 
   async function pollCall(account, ongoing, container, generation) {
@@ -1216,22 +1535,15 @@
       if (generation !== state.drawerGeneration) return;
       ongoing.status = response.status || "in-progress";
       ongoing.summary = response.summary || response.transcript_summary || null;
-      if (ongoing.status === "done" && ongoing.summary && typeof ongoing.summary === "object" && ongoing.summary.cancelled === true) {
-        const current = state.estate.accounts.find((item) => item.id === account.id);
-        if (current && current.status !== "done") {
-          try {
-            const updated = await patchAccount(account.id, { status: "done" });
-            if (generation !== state.drawerGeneration) return;
-            const statusSelect = $("account-status");
-            if (statusSelect) statusSelect.value = updated.status;
-          } catch (error) {
-            updateCallState(container, account, ongoing.status, ongoing.summary);
-            container.append(element("p", "inline-error", `The call confirmed cancellation, but progress could not be saved. ${errorMessage(error)}`));
-            return;
-          }
-        }
-      }
       updateCallState(container, account, ongoing.status, ongoing.summary);
+      if (ongoing.status === "done") {
+        // The server recorded the company's answer and progress; show what the family now sees.
+        try { await refreshEstate(); } catch (_) { /* The next sync shows it. */ }
+        if (generation !== state.drawerGeneration) return;
+        const current = state.estate.accounts.find((item) => item.id === account.id);
+        const statusSelect = $("account-status");
+        if (current && statusSelect) statusSelect.value = current.status;
+      }
       if (["done", "failed"].includes(ongoing.status)) return;
       state.pollTimer = setTimeout(() => pollCall(account, ongoing, container, generation), 3000);
     } catch (error) {
@@ -1326,6 +1638,12 @@
     } catch (_) {
       // A new installation has no estate until the first analysis; the start screen remains usable.
     }
+    try {
+      const { connection, persona } = await api("/api/workspace", {}, false);
+      if (!state.estate && persona) personalize({ persona });
+      state.connection = connection;
+      showConnection(connection);
+    } catch (_) { /* Keep the default description. */ }
     screen(demo ? "welcome-screen" : "plan-screen");
   }
 
@@ -1341,7 +1659,14 @@
     try {
       state.estateSlug = "";
       const identity = await api("/api/identify", { method: "POST", body: JSON.stringify({ deceased, name, relationship }) });
-      if (!identity.found) { showError($("signin-error"), identity.message); return; }
+      if (!identity.found) {
+        showError($("signin-error"), `${identity.message} If their email hasn’t been uploaded yet, start there.`);
+        $("signin-error").append(" ", button("Upload their mailbox →", "text-button", () => {
+          showUpload();
+          $("upload-deceased").value = deceased; $("upload-name").value = name; $("upload-relationship").value = relationship;
+        }));
+        return;
+      }
       state.estateSlug = identity.estate;
       state.actor = identity.name;
       const url = new URL(location.href);
@@ -1353,6 +1678,366 @@
     } catch (error) {
       showError($("signin-error"), errorMessage(error));
     } finally { $("signin-submit").disabled = false; }
+  });
+
+  // ---- The family workspace: review, corrections, next steps, funding, digest and exports ----
+  const isDismissed = (account) => (account.review || {}).state === "dismissed";
+  const visibleAccounts = () => state.estate.accounts.filter((account) => !isDismissed(account));
+  const categoryLabels = { subscription: "Subscription", utility: "Utility", bank: "Bank account", investment: "Investment", pension: "Pension", insurance: "Insurance", crypto: "Crypto", payment_app: "Payment app", government: "Government benefit", debt: "Debt or credit card", digital_legacy: "Digital account" };
+  const frequencyLabels = { monthly: "Monthly", annual: "Yearly", balance: "Balance", one_time: "One-time", none: "No amount" };
+  const outcomeLabels = { completed: "Completed", accepted: "Request opened", documents_required: "Documents needed", declined: "Declined", unclear: "Not confirmed" };
+  const firstName = () => ((state.estate && state.estate.persona && state.estate.persona.name) || state.personaName || "Your loved one").split(" ")[0];
+
+  function selectField(id, label, options, value) {
+    const wrapper = element("div");
+    const title = element("label", "field-label", label);
+    title.htmlFor = id;
+    const select = element("select");
+    select.id = id;
+    options.forEach(([optionValue, text]) => { const option = element("option", "", text); option.value = optionValue; select.append(option); });
+    if (value !== undefined && value !== null) select.value = value;
+    return { wrapper: append(wrapper, title, select), select };
+  }
+
+  function inputField(id, label, attributes = {}) {
+    const wrapper = element("div");
+    const title = element("label", "field-label", label);
+    title.htmlFor = id;
+    const input = element(attributes.multiline ? "textarea" : "input");
+    input.id = id;
+    Object.entries(attributes).forEach(([key, value]) => { if (key !== "multiline") input[key] = value; });
+    return { wrapper: append(wrapper, title, input), input };
+  }
+
+  // Re-read the shared estate after a change, so totals and every section agree.
+  async function refreshEstate() {
+    const fresh = await api("/api/estate", {}, false);
+    if (fresh && Array.isArray(fresh.accounts)) state.estate = fresh;
+    renderEstateSections();
+  }
+
+  function renderEstateSections() {
+    if (!state.estate) return;
+    $("estate-description").textContent = `We found ${number(visibleAccounts().length)} accounts in ${firstName()}’s information. Here’s where to begin.`;
+    renderSummary(); renderUrgent(); renderDiscovery(); renderTabs(); renderLedger(); renderCoverage(); renderReviewQueue();
+    loadNextSteps(); loadFunding(); loadActivity(); loadProgress();
+  }
+
+  // Run a workspace change, then refresh and keep the open drawer where the family left it.
+  async function workspaceChange(request, success, errorNode) {
+    try {
+      const updated = await request();
+      await refreshEstate();
+      if (success) toast(success);
+      if (state.currentAccount && !$("drawer-shell").hidden) {
+        const top = $("account-drawer").scrollTop;
+        const still = state.estate.accounts.some((item) => item.id === state.currentAccount);
+        if (still) { openAccount(state.currentAccount); $("account-drawer").scrollTop = top; }
+      }
+      return updated;
+    } catch (error) {
+      if (errorNode) showError(errorNode, errorMessage(error));
+      else toast(errorMessage(error));
+      return null;
+    }
+  }
+
+  // A result that arrived while the family watched: show its follow-ups and progress right away.
+  async function showArrivedResult(accountId) {
+    try { await refreshEstate(); } catch (_) { return; }
+    if (state.currentAccount === accountId && !$("drawer-shell").hidden) {
+      const top = $("account-drawer").scrollTop;
+      openAccount(accountId);
+      $("account-drawer").scrollTop = top;
+    }
+  }
+
+  async function loadNextSteps() {
+    let steps;
+    try { steps = (await api("/api/next-steps", {}, false)).steps || []; } catch (_) { $("next-steps").hidden = true; return; }
+    $("next-steps").hidden = false;
+    if (!steps.length) { $("next-steps-list").replaceChildren(element("li", "empty-activity", "Everything found is done or waiting on someone else. Nicely done.")); return; }
+    $("next-steps-list").replaceChildren(...steps.map((step) => {
+      const item = element("li", `next-step kind-${step.kind}`);
+      const text = append(element("div", "next-step-text"), element("strong", "", step.title), element("span", "", step.detail));
+      let action = null;
+      if (step.account_id) action = button("Open →", "text-button", () => openAccount(step.account_id));
+      else if (step.kind === "review") action = button("Review →", "text-button", () => { $("review-queue").scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" }); });
+      return append(item, text, action);
+    }));
+  }
+
+  function renderReviewQueue() {
+    const container = $("review-queue");
+    const flagged = visibleAccounts().filter((account) => account.needs_review);
+    container.hidden = false;
+    const heading = element("h2", "", flagged.length ? `${flagged.length} finding${flagged.length === 1 ? "" : "s"} to check` : "Everything found has been checked");
+    heading.id = "review-title";
+    const intro = element("p", "", flagged.length ? "These came from a single record, have no amount, or stopped charging. Confirm the real ones and dismiss anything that isn’t an account." : "Know of an account we missed? Add it so the whole family can track it.");
+    const list = element("div", "review-list");
+    flagged.slice(0, 8).forEach((account) => {
+      const reasons = [];
+      if ((account.evidence_ids || []).length <= 1 && !(account.sources || []).includes("bank")) reasons.push("found in one record");
+      if (account.bucket === "leaving" && account.amount === null) reasons.push("no amount");
+      if (account.active === false) reasons.push("no recent charge");
+      const row = element("div", "review-item");
+      const text = append(element("div", "review-item-text"), element("strong", "", account.institution), element("span", "", `${categoryLabels[account.category] || account.category} · ${reasons.join(", ")}`));
+      const actions = element("div", "review-actions");
+      const error = element("p", "inline-error"); error.hidden = true;
+      append(actions,
+        button("Open", "text-button", () => openAccount(account.id)),
+        button("Looks right", "button button-secondary mini-button", () => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/review`, { method: "POST", body: JSON.stringify({ state: "confirmed" }) }), `${account.institution} confirmed.`, error)),
+        button("Not an account", "button button-secondary mini-button", () => workspaceChange(() => api(`/api/account/${encodeURIComponent(account.id)}/review`, { method: "POST", body: JSON.stringify({ state: "dismissed", reason: "Not an account" }) }), `${account.institution} dismissed. You can restore it from the bottom of the list.`, error)));
+      list.append(append(row, text, actions, error));
+    });
+    const addButton = button("+ Add an account we missed", "text-button", () => { addButton.hidden = true; renderAddAccountForm(container, () => { addButton.hidden = false; }); });
+    container.replaceChildren(heading, intro, list, addButton);
+  }
+
+  function renderAddAccountForm(parent, onClose) {
+    const form = element("form", "add-account-form");
+    const name = inputField("add-institution", "Company or institution", { maxLength: 150, required: true, placeholder: "e.g. Ally Bank" });
+    const category = selectField("add-category", "Kind of account", Object.entries(categoryLabels), "subscription");
+    const amount = inputField("add-amount", "Amount (optional)", { type: "number", min: "0", step: "0.01", placeholder: "0.00" });
+    const frequency = selectField("add-frequency", "Billing", Object.entries(frequencyLabels), "monthly");
+    const note = inputField("add-note", "Where you learned about it (optional)", { maxLength: 1000, placeholder: "e.g. Paper statement in the desk" });
+    note.wrapper.className = "wide";
+    const error = element("p", "inline-error"); error.hidden = true; error.setAttribute("role", "alert");
+    const submit = button("Add account", "button button-primary mini-button"); submit.type = "submit";
+    const cancel = button("Cancel", "text-button", () => { form.remove(); onClose(); });
+    append(form, name.wrapper, category.wrapper, amount.wrapper, frequency.wrapper, note.wrapper, append(element("div", "form-actions"), submit, cancel, error));
+    category.select.addEventListener("change", () => {
+      const kind = category.select.value;
+      frequency.select.value = ["subscription", "utility"].includes(kind) ? "monthly" : ["bank", "investment", "insurance", "crypto", "payment_app", "debt"].includes(kind) ? "balance" : "none";
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!name.input.value.trim()) { showError(error, "Enter the company or institution."); name.input.focus(); return; }
+      submit.disabled = true; error.hidden = true;
+      const body = { institution: name.input.value.trim(), category: category.select.value, frequency: frequency.select.value, note: note.input.value.trim() };
+      if (amount.input.value !== "") body.amount = Number(amount.input.value);
+      const added = await workspaceChange(() => api("/api/accounts", { method: "POST", body: JSON.stringify(body) }), `${body.institution} added for the family.`, error);
+      submit.disabled = false;
+      if (added) { form.remove(); onClose(); }
+    });
+    parent.append(form);
+    name.input.focus();
+  }
+
+  async function loadFunding() {
+    let data;
+    try { data = await api("/api/funding", {}, false); } catch (_) { $("funding-section").hidden = true; return; }
+    const sources = (data.sources || []).filter((source) => source.charges.length);
+    $("funding-section").hidden = !sources.length;
+    $("funding-grid").replaceChildren(...sources.map((source) => {
+      const card = element("article", "funding-card");
+      const title = element("h3", "", source.funder);
+      const total = element("div", "funding-total", `${money(source.monthly_total, true)} / mo`);
+      const list = element("ul");
+      source.charges.forEach((charge) => {
+        const item = element("li", charge.status === "done" ? "done" : "");
+        append(item, button(charge.institution, "", () => openAccount(charge.account_id)), element("span", "", charge.monthly ? money(charge.monthly, true) : "—"));
+        list.append(item);
+      });
+      append(card, title, total, list);
+      if (source.note) card.append(element("p", "funding-note", source.note));
+      if (source.warning) card.append(element("p", "funding-warning", source.warning));
+      if (source.account_id) card.append(button("Open the paying account →", "text-button", () => openAccount(source.account_id)));
+      return card;
+    }));
+  }
+
+  async function openDigest() {
+    const body = $("digest-body");
+    body.replaceChildren(element("p", "loading-text", "Gathering the week…"));
+    $("digest-dialog").showModal();
+    try {
+      const digest = await api("/api/digest", {}, false);
+      state.digest = digest;
+      const section = (title, items) => items.length ? [element("h3", "", title), append(element("ul"), ...items.map((text) => element("li", "", text)))] : [];
+      body.replaceChildren(
+        element("p", "", `${digest.done} of ${digest.total} accounts are done. ${digest.updates} update${digest.updates === 1 ? "" : "s"} from ${digest.people.length ? digest.people.join(", ") : "the family"} this week.`),
+        ...section("Completed this week", digest.completed),
+        ...section("Coming up", digest.upcoming.map((item) => `${date(item.date)}: ${item.title}${item.overdue ? " (overdue)" : ""}`)),
+        ...section("Waiting on someone", digest.waiting.map((item) => `${item.person}: ${item.accounts.join(", ")}`)),
+        ...section("Asked for help", digest.help.map((item) => `${item.author} on ${item.institution}: ${item.text}`)));
+      if (!digest.completed.length && !digest.upcoming.length && !digest.waiting.length && !digest.help.length) body.append(element("p", "review-note", "A quiet week. Assign an account or add a follow-up and it will appear here."));
+    } catch (error) { body.replaceChildren(element("p", "inline-error", errorMessage(error))); }
+  }
+  $("open-digest").addEventListener("click", openDigest);
+  $("digest-close").addEventListener("click", () => $("digest-dialog").close());
+  $("digest-copy").addEventListener("click", async () => {
+    if (!state.digest) return;
+    try { await navigator.clipboard.writeText(state.digest.text); toast("Digest copied. Paste it into your family’s group chat or email."); }
+    catch (_) { toast("Copy isn’t available in this browser. Use Download instead."); }
+  });
+  $("digest-download").addEventListener("click", () => { if (state.digest) saveBlob(new Blob([state.digest.text], { type: "text/plain;charset=utf-8" }), "Lastly-weekly-digest.txt"); });
+  $("download-report").addEventListener("click", async () => {
+    $("download-report").disabled = true;
+    try {
+      const report = await api("/api/report", {}, false);
+      saveBlob(new Blob([report.html], { type: "text/html;charset=utf-8" }), report.filename);
+      toast("Executor report downloaded. Open it in a browser to print or share.");
+    } catch (error) { toast(errorMessage(error)); }
+    finally { $("download-report").disabled = false; }
+  });
+
+  async function loadConnection() {
+    try { state.connection = (await api("/api/workspace", {}, false)).connection; } catch (_) { state.connection = null; }
+    if (state.estate) renderCoverage();
+  }
+
+  // Upload a Google Takeout mailbox: it becomes a new, private estate for this family.
+  function sendMailbox(file, params, onProgress) {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", `/api/import?${new URLSearchParams(params)}`);
+      request.setRequestHeader("Content-Type", "application/mbox");
+      request.setRequestHeader("Accept", "application/json");
+      request.setRequestHeader("X-Requested-With", "Lastly");
+      if (csrfToken) request.setRequestHeader("X-CSRF-Token", csrfToken);
+      request.upload.addEventListener("progress", (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); });
+      request.addEventListener("load", () => {
+        let data = null;
+        try { data = JSON.parse(request.responseText); } catch (_) { /* Reported below. */ }
+        if (request.status >= 200 && request.status < 300 && data) resolve(data);
+        else {
+          const error = new ApiError(data && typeof data.detail === "string" ? data.detail : `The upload failed (${request.status}). Please try again.`, request.status);
+          error.existing = data && typeof data.existing === "string" ? data.existing : "";
+          reject(error);
+        }
+      });
+      request.addEventListener("error", () => reject(new ApiError("We couldn’t reach Lastly. Check that the server is running and try again.", 0, true)));
+      request.send(file);
+    });
+  }
+
+  const providerGuides = {
+    gmail: { title: "Export Gmail with Google Takeout", steps: ["Sign in at takeout.google.com with their Google account (or the access Google grants the family after a death request).", "Choose “Deselect all”, then select only Mail. Leave the format as MBOX.", "Create the export. Google emails a download link when it’s ready, often within a few hours.", "Unzip the download and upload “All mail Including Spam and Trash.mbox”."], note: "Large mailboxes can take a day to export. The file stays on this computer, encrypted." },
+    icloud: { title: "Export iCloud Mail from Apple Mail", steps: ["On a Mac, add their iCloud account in Mail › Settings › Accounts and let the mail download.", "Select the Inbox (and Archive, if used), then choose Mailbox › Export Mailbox.", "Open the exported folder (it ends in .mbox) and upload the file named “mbox” inside it."], note: "Apple Mail exports one mailbox at a time. Start with the Inbox; it holds most receipts." },
+    yahoo: { title: "Copy Yahoo Mail through a mail app", steps: ["Yahoo doesn’t offer a mailbox download, so add the account to Apple Mail or Thunderbird. Yahoo requires an app password from Account Security for this.", "Let the app download all mail, including the Archive folder.", "Export the Inbox: in Apple Mail use Mailbox › Export Mailbox; in Thunderbird use the ImportExportTools NG add-on (Export folder as MBOX).", "Upload the exported mbox file."], note: "Only the exported copy is uploaded. Lastly never asks for the Yahoo password." },
+  };
+  state.provider = "gmail";
+
+  function chooseProvider(provider) {
+    state.provider = provider;
+    document.querySelectorAll(".provider-card").forEach((card) => { const chosen = card.dataset.provider === provider; card.classList.toggle("selected", chosen); card.setAttribute("aria-pressed", String(chosen)); });
+    const guide = providerGuides[provider];
+    const steps = element("ol");
+    guide.steps.forEach((step) => steps.append(element("li", "", step)));
+    $("upload-instructions").replaceChildren(element("h3", "", guide.title), steps, element("p", "", guide.note));
+    $("upload-form-step").hidden = false;
+    $("upload-file").focus();
+  }
+  document.querySelectorAll(".provider-card").forEach((card) => card.addEventListener("click", () => chooseProvider(card.dataset.provider)));
+  $("upload-change-provider").addEventListener("click", () => { $("upload-form-step").hidden = true; document.querySelector(".provider-card").focus(); });
+
+  function showUpload() {
+    $("upload-error").hidden = true;
+    $("upload-status").textContent = "";
+    $("upload-progress").hidden = true;
+    $("upload-form-step").hidden = true;
+    document.querySelectorAll(".provider-card").forEach((card) => { card.classList.remove("selected"); card.setAttribute("aria-pressed", "false"); });
+    screen("upload-screen");
+    document.querySelector(".provider-card").focus();
+  }
+  $("start-upload").addEventListener("click", showUpload);
+  $("plan-upload").addEventListener("click", showUpload);
+  $("upload-back").addEventListener("click", () => { screen(state.estateSlug ? "plan-screen" : "signin-screen"); });
+
+  function showImportReview(result) {
+    const stats = result.stats || {};
+    const providers = { gmail: "Gmail (Google Takeout)", icloud: "iCloud Mail", yahoo: "Yahoo Mail", other: "Mailbox file" };
+    const skipped = [stats.spam_or_trash ? `${number(stats.spam_or_trash)} spam or trash` : "", stats.sent ? `${number(stats.sent)} sent by them` : "", stats.outside_range ? `${number(stats.outside_range)} older than five years` : "", stats.invalid_dates ? `${number(stats.invalid_dates)} without a readable date` : ""].filter(Boolean).join(", ") || "Nothing";
+    const facts = [["Whose estate", result.deceased], ["Mailbox owner", result.owner || "Not stated in the file"], ["Provider", providers[result.provider] || "Mailbox file"],
+      ["Messages to read", number(stats.kept)], ["Date range", stats.first_date ? `${date(stats.first_date)} – ${date(stats.last_date)}` : "—"], ["Different senders", number(stats.senders)], ["Skipped", skipped],
+      ["Who reads it", result.ai ? "Claude, with the family’s cloud consent" : "Local rules on this computer"]];
+    $("import-review-facts").replaceChildren(...facts.map(([label, value]) => append(element("div"), element("span", "", label), element("strong", "", value))));
+    $("import-review-error").hidden = true;
+    state.pendingImport = result;
+    screen("import-review-screen");
+    $("import-confirm").focus();
+  }
+  $("import-confirm").addEventListener("click", () => {
+    const result = state.pendingImport;
+    if (!result) return;
+    personalize({ persona: { name: result.deceased, pronoun: result.pronoun } });
+    state.estate = null;
+    showConnection({ imported: true, provider: result.provider, imported_by: result.name, messages: (result.stats || {}).kept });
+    document.querySelector(".welcome-source div>span").textContent = `${providerNames[result.provider] || "Email"} export · ${result.ai ? "Claude will read it to find accounts" : "Read on this computer with local rules"}`;
+    screen("welcome-screen");
+    $("analyze-button").focus();
+  });
+  $("import-delete").addEventListener("click", async () => {
+    if (!state.pendingImport || !window.confirm("Delete this upload? Nothing from it will be kept.")) return;
+    $("import-delete").disabled = true;
+    try {
+      await api("/api/import", { method: "DELETE" });
+      toast("The upload was deleted.");
+      state.pendingImport = null; state.pending = null; state.estateSlug = ""; state.actor = "";
+      history.replaceState(null, "", location.pathname);
+      showUpload();
+    } catch (error) { showError($("import-review-error"), errorMessage(error)); }
+    finally { $("import-delete").disabled = false; }
+  });
+
+  $("upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const file = $("upload-file").files[0];
+    const params = { deceased: $("upload-deceased").value.trim(), name: $("upload-name").value.trim(), relationship: $("upload-relationship").value.trim(), pronoun: $("upload-pronoun").value, provider: state.provider };
+    params.date_of_death = $("upload-death").value;
+    if (!file || !params.deceased || !params.name || !params.relationship || !params.date_of_death) { showError($("upload-error"), "Choose the mailbox file and enter their full name, your first name, your relationship and the date they passed."); return; }
+    if (!/\.mbox$/i.test(file.name) && file.name !== "mbox") { showError($("upload-error"), "That isn’t a mailbox export. Choose the .mbox file (or the file named “mbox” from Apple Mail)."); return; }
+    $("upload-submit").disabled = true;
+    $("upload-error").hidden = true;
+    const progress = $("upload-progress");
+    const status = $("upload-status");
+    const onProgress = (fraction) => {
+      progress.value = Math.round(fraction * 100);
+      status.textContent = fraction < 1 ? `Uploading ${number(Math.round(file.size * fraction / 1e6))} of ${number(Math.round(file.size / 1e6))} MB…` : "Reading the mailbox…";
+    };
+    try {
+      await sessionReady;
+      progress.hidden = false;
+      onProgress(0);
+      let result;
+      try { result = await sendMailbox(file, params, onProgress); }
+      catch (error) {
+        if (error.status !== 401) throw error;
+        // The family access code protects uploads; ask for it, then send the file again.
+        csrfToken = "";
+        await unlockEstate();
+        result = await sendMailbox(file, params, onProgress);
+      }
+      state.estateSlug = result.estate;
+      state.actor = result.name;
+      state.estate = null;
+      state.pending = { emails: (result.stats || {}).kept || 0, senders: (result.stats || {}).senders || 0, ai: result.ai };
+      const url = new URL(location.href);
+      url.searchParams.set("estate", result.estate);
+      url.searchParams.set("as", result.name);
+      history.replaceState(null, "", url);
+      $("upload-form").reset();
+      toast(`Welcome, ${result.name}. ${result.deceased}’s mailbox is uploaded.`);
+      showImportReview(result);
+    } catch (error) {
+      showError($("upload-error"), errorMessage(error));
+      if (error.status === 409) {
+        // This person already has an estate: offer the ordinary sign-in with the names just entered.
+        const existing = error.existing || params.deceased;
+        $("upload-error").append(" ", button(`Sign in to ${existing}’s estate →`, "text-button", () => {
+          $("signin-deceased").value = existing;
+          $("signin-name").value = params.name;
+          $("signin-relationship").value = params.relationship;
+          screen("signin-screen");
+          $("signin-form").requestSubmit();
+        }));
+      }
+    } finally {
+      $("upload-submit").disabled = false;
+      progress.hidden = true;
+      status.textContent = "";
+    }
   });
 
   if (state.estateSlug) openEstate();

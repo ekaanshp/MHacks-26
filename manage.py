@@ -90,13 +90,11 @@ def main() -> None:
         return
     if (estate.get("analysis") or {}).get("synthetic") is not True:
         parser.exit(1, "Reset is available only for the synthetic demo, so real family progress is preserved.\n")
-    for account in estate["accounts"]:
-        db.update_account(estate["estate_id"], account["id"], status="open", assigned_to=None)
-    # Clear demo claims too, so the agent-to-agent claim can be shown again.
-    claims_file = directory / "runtime_claims.json"
-    if claims_file.exists():
-        write_json(claims_file, {})
-    print(f"Reset {len(estate['accounts'])} synthetic accounts to Open and unassigned, and cleared demo claims.")
+    from server import reset_demo
+
+    # The same reset the server runs with LASTLY_RESET_ON_START: progress, notes, follow-ups, activity, claims and agent tasks.
+    reset_demo(estate)
+    print(f"Reset {len(estate['accounts'])} synthetic accounts to Open and unassigned, and cleared notes, follow-ups, activity, claims and agent requests.")
 
 
 if __name__ == "__main__":

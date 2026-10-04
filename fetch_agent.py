@@ -136,6 +136,37 @@ async def report_claim_response(sender: str, response) -> None:
     })
 
 
+def task_message(item):
+    if item["stage"] == "intro":
+        return f"Hello, I am Lastly, the family's AI assistant. Can your bereavement agent help with a {item['action']} request at {item['institution']}?"
+    return (f"I am acting for {item['executor_name']} and the family of {item['person_name']}, "
+            f"who died on {item['date_of_death']}. Please {item['action']} the {item['category']} "
+            f"at {item['institution']}. Confirm the outcome, any remaining documents, and a reference number.")
+
+
+async def relay_pending_tasks(send):
+    pending = await _claims_request("GET", "/api/agent/tasks")
+    sent = 0
+    for item in pending.get("tasks", []):
+        message = task_message(item)
+        try:
+            await send(dict(item, message=message))
+            await _claims_request("POST", f"/api/agent/tasks/{item['request_id']}", {
+                "status": "sent" if item["stage"] == "intro" else "details_sent", "message": message,
+            })
+            sent += 1
+        except (httpx.HTTPError, KeyError, ValueError):
+            continue
+    return sent
+
+
+async def report_task_response(sender, response):
+    await _claims_request("POST", f"/api/agent/tasks/{response.request_id}", {
+        "status": response.status, "responder": sender, "message": response.message[:1000],
+        "reference_number": response.reference_number, "required_documents": response.required_documents[:8],
+    })
+
+
 def build_agent():
     """Construct the optional agent only when requested, without changing its identity."""
     settings = get_settings()
@@ -157,16 +188,55 @@ def build_agent():
     # Python 3.14 no longer creates an implicit event loop, which uAgents expects.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    from agent_claims import ClaimRequest, ClaimResponse, LocalFirstResolver, claims_protocol
+    from agent_claims import (
+        AccountTaskRequest,
+        AccountTaskResponse,
+        ClaimRequest,
+        ClaimResponse,
+        LocalFirstResolver,
+        claims_protocol,
+        tasks_protocol,
+    )
+    from agent_tasks import company_address
 
     insurer = os.getenv("CLAIMS_AGENT_ADDRESS", "").strip()
+    company = company_address()
+    local_endpoint = os.getenv("LASTLY_AGENT_ENDPOINT", "").strip()
     CLAIM_FIELDS = ("request_id", "policyholder_name", "date_of_death", "institution", "policy_type", "claimant_name")
     agent = Agent(name="Lastly Estate Assistant", seed=settings.agent_seed,
-                  port=settings.agent_port, mailbox=settings.agent_mailbox,
+                  port=settings.agent_port, mailbox=settings.agent_mailbox and not local_endpoint,
+                  endpoint=[local_endpoint] if local_endpoint else None,
                   description=AGENT_DESCRIPTION, publish_agent_details=True, loop=loop,
-                  resolve=LocalFirstResolver({insurer: os.getenv("CLAIMS_AGENT_ENDPOINT", "")}))
+                  resolve=LocalFirstResolver({insurer: os.getenv("CLAIMS_AGENT_ENDPOINT", ""),
+                                             company: os.getenv("COMPANY_AGENT_ENDPOINT", "") or os.getenv("CLAIMS_AGENT_ENDPOINT", "")}))
     protocol = Protocol(spec=chat_protocol_spec)
     claims = claims_protocol()
+    tasks = tasks_protocol()
+
+    @agent.on_interval(period=2.0)
+    async def deliver_tasks(ctx: Context):
+        if not company:
+            return
+
+        async def send(item):
+            request = {key: value for key, value in item.items() if key != "company"}
+            delivery = await ctx.send(item["company"], AccountTaskRequest(**request))
+            if getattr(getattr(delivery, "status", None), "value", "") == "failed":
+                raise ValueError("The company agent could not be reached.")
+
+        try:
+            await relay_pending_tasks(send)
+        except (httpx.HTTPError, ValueError):
+            pass
+
+    @tasks.on_message(AccountTaskResponse)
+    async def handle_task_response(ctx: Context, sender: str, response: AccountTaskResponse):
+        if sender != company:
+            return
+        try:
+            await report_task_response(sender, response)
+        except (httpx.HTTPError, ValueError):
+            ctx.logger.warning("The company agent's response could not be saved.")
 
     @agent.on_interval(period=2.0)
     async def deliver_claims(ctx: Context):
@@ -209,6 +279,7 @@ def build_agent():
 
     agent.include(protocol, publish_manifest=True)
     agent.include(claims, publish_manifest=True)
+    agent.include(tasks, publish_manifest=True)
     return agent
 
 
@@ -217,7 +288,7 @@ def main() -> None:
         agent = build_agent()
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
-    print("Starting Lastly's optional Fetch.ai agent. Use its Agent Inspector link to connect Mailbox.")
+    print("Starting Lastly's Fetch.ai agent. A configured LASTLY_AGENT_ENDPOINT uses local delivery; otherwise connect Mailbox.")
     print("Public replies use the synthetic demo only. Private replies require an explicit sender allowlist and cloud consent.")
     agent.run()
 

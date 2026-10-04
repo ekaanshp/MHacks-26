@@ -275,8 +275,8 @@ class SecurityMiddleware:
         if agent_headers and principal != "agent":
             return await reject(403, "Agent identity requires the dedicated agent credential.")
         # The agent may read the estate, ask questions and relay insurer-agent claims; nothing else.
-        agent_routes = {("/api/estate", "GET"), ("/api/ask", "POST"), ("/api/agent/claims", "GET")}
-        relay = method == "POST" and re.fullmatch(r"/api/agent/claims/[a-f0-9]{32}", path) is not None
+        agent_routes = {("/api/estate", "GET"), ("/api/ask", "POST"), ("/api/agent/claims", "GET"), ("/api/agent/tasks", "GET")}
+        relay = method == "POST" and re.fullmatch(r"/api/agent/(?:claims|tasks)/[a-f0-9]{32}", path) is not None
         if principal == "agent" and (path, method) not in agent_routes and not relay:
             return await reject(403, "This agent credential has read, question and claim-relay access only.")
         if path == "/api/session":
@@ -322,7 +322,7 @@ class SecurityMiddleware:
             return await response(scope, bounded_receive, protected_send)
         if is_api and method in MUTATING:
             operation = path.split("/")[2] if len(path.split("/")) > 2 else "unknown"
-            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12}
+            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12, "agent-task": 12}
             if operation in limits and not self.consume((operation, context), limits[operation]):
                 return await reject(429, "This operation is temporarily rate limited.", **{"Retry-After": "60"})
         scope.setdefault("state", {}).update(principal=principal, request_id=request_id)

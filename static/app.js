@@ -624,16 +624,33 @@
       callButton.hidden = true;
       renderCallForm(callContainer, account, generation);
     });
-    const talkButton = button("Talk to them here 🎙", "button button-secondary", () => {
-      talkButton.hidden = true;
-      callButton.hidden = true;
-      renderVoiceForm(callContainer, account, generation);
+    const talkButton = button("Talk to them 🎙", "button button-primary", () => {
+      callContainer.replaceChildren();
+      if (state.voice && state.voice.account.id === account.id) renderVoiceLive(callContainer, account);
+      else renderVoiceForm(callContainer, account, generation);
     });
-    append(controls, letterButton, callButton, talkButton);
+    append(controls, talkButton, letterButton, callButton);
+    const taskContainer = element("div");
+    if (account.action !== "claim") {
+      const agentButton = button("Let agents handle it ↗", "button button-secondary", async () => {
+        agentButton.disabled = true;
+        actionError.hidden = true;
+        try {
+          const task = await api(`/api/agent-task/${encodeURIComponent(account.id)}`, { method: "POST" });
+          if (generation === state.drawerGeneration) renderAgentTask(taskContainer, account, task, generation);
+        } catch (error) {
+          if (generation === state.drawerGeneration) showError(actionError, errorMessage(error));
+        } finally { agentButton.disabled = false; }
+      });
+      controls.insertBefore(agentButton, letterButton);
+      api(`/api/agent-task/${encodeURIComponent(account.id)}`, { signal: state.drawerAbort.signal }, false).then((task) => {
+        if (generation === state.drawerGeneration && task.status) renderAgentTask(taskContainer, account, task, generation);
+      }).catch(() => {});
+    }
     const claimContainer = element("div");
     if (account.action === "claim") {
       // Agent-to-agent: Lastly's Fetch.ai agent asks the insurer's agent to open the claim.
-      const claimButton = button("Open a claim via agent ↗", "button button-primary", async () => {
+      const claimButton = button("Let agents handle it ↗", "button button-secondary", async () => {
         claimButton.disabled = true;
         claimButton.textContent = "Contacting the insurer’s agent…";
         actionError.hidden = true;
@@ -645,7 +662,7 @@
         } catch (error) {
           if (generation === state.drawerGeneration && error.name !== "AbortError") showError(actionError, errorMessage(error));
           claimButton.disabled = false;
-          claimButton.textContent = "Open a claim via agent ↗";
+          claimButton.textContent = "Let agents handle it ↗";
         }
       });
       controls.prepend(claimButton);
@@ -655,18 +672,58 @@
         renderClaim(claimContainer, account, claim, generation);
       }).catch(() => { /* No claim yet. */ });
     }
-    append(parent, controls, actionError, claimContainer, letterContainer, callContainer);
+    append(parent, controls, actionError, taskContainer, claimContainer, letterContainer, callContainer);
     if (state.voice && state.voice.account.id === account.id) {
       callButton.hidden = true;
-      talkButton.hidden = true;
       renderVoiceLive(callContainer, account);
     } else if (state.calls.has(account.id)) {
       callButton.hidden = true;
-      talkButton.hidden = true;
       const ongoing = state.calls.get(account.id);
       const callState = renderCallState(callContainer, account, ongoing.status, ongoing.summary);
       if (!["done", "failed"].includes(ongoing.status) && ongoing.conversation_id) pollCall(account, ongoing, callState, generation);
     }
+  }
+
+  function renderAgentTask(parent, account, task, generation, waited = 0) {
+    if (generation !== state.drawerGeneration) return;
+    clearTimeout(parent.taskPollTimer);
+    const container = element("div", "call-state");
+    const titles = { queued: "Waiting for Lastly’s Fetch.ai agent…", sent: "Contacting the company agent…", awaiting_details: "Company agent requested account details…", details_sent: "Waiting for the company’s confirmation…", completed: "Agent request complete", pending: "The family has steps to complete", rejected: "The company agent declined this request", failed: "The agent request could not be delivered" };
+    container.append(element("strong", "", titles[task.status] || "Agent conversation in progress"));
+    container.append(element("p", "review-note", "Fetch.ai conversation with a demonstration company agent."));
+    const transcript = element("div", "voice-transcript");
+    (task.transcript || []).forEach((line) => {
+      const row = element("p", "voice-line");
+      append(row, element("span", "voice-speaker", `${line.speaker} agent`), document.createTextNode(line.message));
+      transcript.append(row);
+    });
+    container.append(transcript);
+    if (task.reference_number) container.append(element("p", "reference", `Reference: ${task.reference_number}`));
+    if (task.required_documents && task.required_documents.length) container.append(element("p", "", task.required_documents.join(" · ")));
+    const finished = ["completed", "pending", "rejected", "failed"].includes(task.status);
+    if (!finished && waited >= 30) container.append(element("p", "inline-error", "Still waiting for the agents. Check that fetch_agent.py and insurer_agent.py are running."));
+    parent.replaceChildren(container);
+    if (task.status === "completed") {
+      const current = state.estate.accounts.find((item) => item.id === account.id);
+      if (current && current.status !== "done") {
+        current.status = "done";
+        renderLedger(); renderTabs(); loadActivity();
+        const select = $("account-status");
+        if (select) select.value = "done";
+      }
+    }
+    if (finished) return;
+    parent.taskPollTimer = setTimeout(async () => {
+      if (generation !== state.drawerGeneration) return;
+      try {
+        const next = await api(`/api/agent-task/${encodeURIComponent(account.id)}`, { signal: state.drawerAbort.signal }, false);
+        renderAgentTask(parent, account, next, generation, waited + 2);
+      } catch (error) {
+        if (error.name !== "AbortError" && generation === state.drawerGeneration) {
+          container.append(element("p", "inline-error", errorMessage(error)), button("Check agents again", "text-button", () => renderAgentTask(parent, account, task, generation, waited)));
+        }
+      }
+    }, 2000);
   }
 
   function renderLetter(parent, text, account) {
@@ -828,7 +885,27 @@
 
   function renderVoiceForm(parent, account, generation) {
     const form = element("div", "call-form");
-    const note = element("p", "review-note", `This starts a live voice conversation in your browser with an AI assistant acting on your family’s behalf with ${account.institution}. It will identify itself as an AI. Allow microphone access; whoever plays the company speaks into this computer.`);
+    const note = element("p", "review-note", `Speak directly to Lastly using your microphone. For this ${account.institution} role-play, you are the company representative and Lastly speaks for the family. Your replies determine the conversation.`);
+    const microphoneLabel = element("label", "field-label", "Microphone");
+    microphoneLabel.htmlFor = "voice-microphone";
+    const microphone = element("select");
+    microphone.id = "voice-microphone";
+    const defaultDevice = element("option", "", "System default microphone");
+    defaultDevice.value = "";
+    microphone.append(defaultDevice);
+    const chooseMicrophone = button("Find microphones", "text-button", async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        microphone.replaceChildren(defaultDevice);
+        devices.filter((device) => device.kind === "audioinput" && device.deviceId !== "default").forEach((device, index) => {
+          const option = element("option", "", device.label || `Microphone ${index + 1}`);
+          option.value = device.deviceId;
+          microphone.append(option);
+        });
+      } catch (_) { showError(error, "Allow microphone access in your browser to choose a microphone."); }
+    });
     const error = element("p", "inline-error");
     error.hidden = true;
     error.setAttribute("role", "alert");
@@ -837,20 +914,23 @@
       start.disabled = true;
       start.textContent = "Connecting…";
       error.hidden = true;
+      const voice = { account, conversation: null, mode: "listening", lines: [], finished: false, container: null, muted: false };
+      state.voice = voice;
       try {
         const [session, sdk] = await Promise.all([
           api(`/api/voice/${encodeURIComponent(account.id)}`, { method: "POST" }, false),
           loadVoiceSdk(),
         ]);
-        if (generation !== state.drawerGeneration) return;
-        const voice = { account, conversation: null, mode: "listening", lines: [], finished: false, container: null };
-        state.voice = voice;
+        if (generation !== state.drawerGeneration) { if (state.voice === voice) state.voice = null; return; }
         voice.conversation = await sdk.Conversation.startSession({
           signedUrl: session.signed_url,
           connectionType: "websocket",
+          textOnly: false,
+          inputDeviceId: microphone.value || undefined,
           dynamicVariables: session.dynamic_variables,
           workletPaths: { rawAudioProcessor: "/static/vendor/raw-audio-processor.js", audioConcatProcessor: "/static/vendor/audio-concat-processor.js" },
           onModeChange: ({ mode }) => { voice.mode = mode; paintVoice(voice); },
+          onConversationCreated: (conversation) => { voice.conversation = conversation; },
           // Expressive voices emit tone tags such as "[calm]"; they shape speech and are not shown.
           onMessage: ({ source, message }) => {
             const text = String(message || "").replace(/\[[a-z][a-z \-]{0,24}\]\s*/gi, "").trim();
@@ -859,9 +939,15 @@
           onError: (message) => { voice.error = typeof message === "string" ? message : "The voice connection reported an error."; paintVoice(voice); },
           onDisconnect: () => finishVoice(voice),
         });
+        if (voice.finished) return;
+        voice.conversation.setMicMuted(false);
+        voice.meterTimer = setInterval(() => {
+          if (voice.level && voice.level.isConnected && voice.conversation) voice.level.value = voice.muted ? 0 : voice.conversation.getInputVolume();
+        }, 150);
         if (generation === state.drawerGeneration) { parent.replaceChildren(); renderVoiceLive(parent, account); }
       } catch (startError) {
-        if (state.voice && !state.voice.conversation) state.voice = null;
+        if (voice.conversation) { try { await voice.conversation.endSession(); } catch (_) {} }
+        if (state.voice === voice) state.voice = null;
         if (startError.status === 401) {
           csrfToken = "";
           $("lock-estate").hidden = true;
@@ -873,7 +959,7 @@
         if (generation === state.drawerGeneration && !(state.voice && state.voice.conversation)) { start.disabled = false; start.textContent = "Approve & start conversation 🎙"; }
       }
     });
-    append(form, note, start, error);
+    append(form, note, microphoneLabel, microphone, chooseMicrophone, start, error);
     parent.append(form);
   }
 
@@ -896,7 +982,7 @@
     const transcript = element("div", "voice-transcript");
     voice.lines.slice(-8).forEach((line) => {
       const row = element("p", line.source === "ai" ? "voice-line voice-ai" : "voice-line");
-      append(row, element("span", "voice-speaker", line.source === "ai" ? "Lastly (AI)" : voice.account.institution), document.createTextNode(line.message));
+      append(row, element("span", "voice-speaker", line.source === "ai" ? "Lastly (AI)" : `You · ${voice.account.institution} representative`), document.createTextNode(line.message));
       transcript.append(row);
     });
     const end = button(voice.ending ? "Ending…" : "End conversation", "button button-secondary voice-end", () => {
@@ -907,6 +993,40 @@
     });
     end.disabled = Boolean(voice.ending);
     container.replaceChildren(heading, transcript);
+    const microphoneStatus = element("p", "", voice.muted ? "Microphone muted" : "Microphone on · speak naturally or type a reply below");
+    voice.level = element("meter", "voice-level");
+    voice.level.min = 0;
+    voice.level.max = 1;
+    voice.level.value = 0;
+    voice.level.setAttribute("aria-label", "Microphone input level");
+    const mute = button(voice.muted ? "Unmute microphone" : "Mute microphone", "text-button", () => {
+      voice.muted = !voice.muted;
+      voice.conversation.setMicMuted(voice.muted);
+      paintVoice(voice);
+    });
+    append(container, microphoneStatus, voice.level, mute);
+    if (!voice.replyForm) {
+      voice.replyForm = element("form", "voice-reply-form");
+      const label = element("label", "field-label", "Your reply as the company representative");
+      const input = element("input");
+      input.id = "voice-reply";
+      label.htmlFor = input.id;
+      input.placeholder = "Type a reply if your microphone isn’t working";
+      input.maxLength = 2000;
+      const send = button("Send reply", "button button-secondary");
+      send.type = "submit";
+      append(voice.replyForm, label, input, send);
+      voice.replyForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const message = input.value.trim();
+        if (!message || voice.ending || voice.finished) return;
+        voice.conversation.sendUserMessage(message);
+        voice.lines.push({ source: "user", message });
+        input.value = "";
+        paintVoice(voice);
+      });
+    }
+    container.append(voice.replyForm);
     if (voice.error) container.append(element("p", "inline-error", voice.error));
     container.append(end);
   }
@@ -914,6 +1034,7 @@
   async function finishVoice(voice) {
     if (voice.finished) return;
     voice.finished = true;
+    clearInterval(voice.meterTimer);
     if (state.voice === voice) state.voice = null;
     const account = voice.account;
     const conversationId = voice.conversation && voice.conversation.getId && voice.conversation.getId();
@@ -952,7 +1073,7 @@
     if (!["done", "failed", "placed"].includes(status)) heading.prepend(element("span", "pulse-dot"));
     container.replaceChildren(heading);
     if (summary && typeof summary === "object") {
-      if (typeof summary.cancelled === "boolean") container.append(element("p", "", summary.cancelled ? "Cancellation confirmed. This account is marked complete." : "Cancellation was not confirmed. Review the next steps before marking this account complete."));
+      if (typeof summary.cancelled === "boolean") container.append(element("p", "", summary.cancelled ? "Cancellation confirmed. This account is marked complete." : "The representative did not clearly confirm completed cancellation. If you know it was completed, set Progress to Done above."));
       if (summary.reference_number) container.append(element("p", "reference", `Reference: ${summary.reference_number}`));
       const nextSteps = Array.isArray(summary.next_steps) ? summary.next_steps.join(" ") : summary.next_steps;
       if (nextSteps) container.append(element("p", "", nextSteps));

@@ -410,6 +410,83 @@ def run_security_browser_checks(base_url: str, access_code: str, executable: str
             browser.close()
 
 
+def run_conversation_browser_checks(base_url, executable):
+    """SDK events and Fetch.ai status updates are isolated from external providers."""
+    from playwright.sync_api import sync_playwright
+
+    estate = read_json(f"{base_url}/api/estate")
+    account = next(a for a in estate["accounts"] if "Paramount" in a["institution"])
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, executable_path=executable, args=["--no-sandbox"])
+        page = browser.new_page(reduced_motion="reduce")
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script("""(() => {
+            window.voiceTest = { sent: [], muted: [] };
+            window.ElevenLabsClient = { Conversation: { startSession: async (options) => {
+                window.voiceTest.options = options;
+                const conversation = {
+                    getId: () => 'voice-test', getInputVolume: () => 0.4,
+                    setMicMuted: (muted) => window.voiceTest.muted.push(muted),
+                    sendUserMessage: (text) => window.voiceTest.sent.push(text),
+                    endSession: async () => options.onDisconnect(),
+                };
+                options.onConversationCreated(conversation);
+                return conversation;
+            } } };
+        })();""")
+        page.route("**/api/voice/**", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"signed_url": "wss://api.elevenlabs.io/test", "dynamic_variables": {"institution": account["institution"]}})))
+        page.route("**/api/call/voice-test", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "done", "summary": {"cancelled": False, "reference_number": "REF-VOICE", "next_steps": []}})))
+        task_started = [False]
+
+        def task_route(route):
+            if route.request.method == "POST":
+                task_started[0] = True
+                result = {"id": "test-task", "status": "queued", "transcript": []}
+            elif task_started[0]:
+                result = {"id": "test-task", "status": "completed", "reference_number": "REF-PARAMOUNT", "transcript": [
+                    {"speaker": "Lastly", "message": "Please cancel this subscription."},
+                    {"speaker": account["institution"], "message": "The subscription has been cancelled."},
+                ]}
+            else:
+                result = {"status": None}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(result))
+
+        page.route("**/api/agent-task/*", task_route)
+        try:
+            page.goto(f"{base_url}/?demo=1")
+            page.get_by_role("button", name="Read Margaret").click()
+            page.locator("#dashboard").wait_for(state="visible")
+            page.locator(f'[data-account-id="{account["id"]}"]').click()
+            page.get_by_role("button", name="Talk to them").click()
+            page.get_by_role("button", name="Approve & start conversation").click()
+            page.get_by_text("Microphone on", exact=False).wait_for()
+            assert page.evaluate("window.voiceTest.options.textOnly") is False
+            assert page.evaluate("window.voiceTest.muted") == [False]
+            page.evaluate("window.voiceTest.options.onMessage({source: 'user', message: 'I need a death certificate first.'})")
+            assert "I need a death certificate first." in page.locator(".voice-transcript").inner_text()
+            page.locator("#voice-reply").fill("The reference is REF-123.")
+            page.get_by_role("button", name="Send reply").click()
+            assert page.evaluate("window.voiceTest.sent") == ["The reference is REF-123."]
+            page.get_by_role("button", name="Mute microphone", exact=True).click()
+            page.get_by_text("Microphone muted", exact=True).wait_for()
+            page.get_by_role("button", name="Unmute microphone", exact=True).click()
+            assert page.evaluate("window.voiceTest.muted") == [False, True, False]
+            page.get_by_role("button", name="End conversation", exact=True).click()
+            page.get_by_text("Reference: REF-VOICE", exact=True).wait_for()
+            assert page.locator("#account-status").input_value() != "done"
+            page.get_by_role("button", name="Let agents handle it").click()
+            page.get_by_text("Reference: REF-PARAMOUNT", exact=True).wait_for()
+            assert page.locator("#account-status").input_value() == "done"
+            assert "subscription has been cancelled" in page.locator(".voice-transcript").inner_text()
+            assert not errors, errors
+            print("PASS conversation modes: live mic, user transcript, typed replies, mute, Fetch.ai receipt and Done without reload")
+        finally:
+            browser.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base-url", help="Use an existing synthetic estate instead of an isolated offline server.")
@@ -425,6 +502,7 @@ def main() -> int:
         if not args.security_only:
             with test_server(args.base_url) as base_url:
                 run_browser_checks(base_url, args.screenshots, args.browser_executable)
+                run_conversation_browser_checks(base_url, args.browser_executable)
         if not args.base_url:
             access_code = secrets.token_urlsafe(32)
             with test_server(None, access_code=access_code) as base_url:

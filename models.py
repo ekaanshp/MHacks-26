@@ -122,3 +122,17 @@ class ClaimUpdate(BaseModel):
         if any(not isinstance(item, str) or not item.strip() or len(item) > 200 for item in value):
             raise ValueError("Each required document must be 1-200 characters.")
         return [item.strip() for item in value]
+
+
+class AgentTaskUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["sent", "awaiting_details", "details_sent", "completed", "pending", "rejected", "failed"]
+    responder: str = Field(default="", max_length=120)
+    reference_number: str | None = Field(default=None, max_length=40, pattern=r"^[A-Z0-9][A-Z0-9-]{2,39}$")
+    required_documents: list[str] = Field(default_factory=list, max_length=8)
+    message: str = Field(default="", max_length=1000)
+
+    @field_validator("required_documents")
+    @classmethod
+    def short_documents(cls, value: list[str]) -> list[str]:
+        return ClaimUpdate.short_documents(value)

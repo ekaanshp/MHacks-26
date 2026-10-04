@@ -34,7 +34,12 @@ The fixture uses the generation date as today. Margaret's death is 21 days earli
 - Neon JSONB schema and durable JSON fallback. Edits made during an outage are queued and replayed on reconnection, preserving fields changed by other family members.
 - Responsive dashboard, onboarding, urgent renewals, $50,000 policy discovery, both proof sources, coverage checklist, reviewed letter drafts, evidence-backed questions, and accessible account drawers.
 - Explicit ElevenLabs calls with dynamic variables, AI disclosure, transcript polling, reference numbers, and completion only after an unconditional company confirmation.
+- **Talk to them** opens a live microphone conversation with Lastly; you play the company representative. Choose your microphone, watch its input level, mute/unmute, or type replies. **Let agents handle it** exchanges account requests and responses through the two Fetch.ai processes, including subscriptions such as Paramount. The company process is a demonstration stand-in; its messages and references are generated from each request and synthetic account progress updates when it confirms completion.
 - Optional Fetch.ai Chat Protocol/mailbox agent, five-slide pitch, Devpost draft, role-play script, and demo/submission checklist.
+
+After updating conversation code, restart the web server and both agent processes, then refresh the page. Run `python manage.py elevenlabs-setup` to apply the caller prompt and longer response window to the configured ElevenLabs agent. Fetch.ai subscription conversations reuse `CLAIMS_AGENT_ADDRESS` and `CLAIMS_AGENT_ENDPOINT`; separate company agent settings are optional.
+
+When `LASTLY_AGENT_ENDPOINT` is set, the Lastly agent listens locally for company replies. Clear it to use Agentverse Mailbox instead; local delivery takes precedence over `AGENT_MAILBOX`.
 
 See [the account setup guide](docs/integrations.md), [demo script](docs/demo.md), [role-play](docs/roleplay.md), [pitch deck](docs/pitch.html), [Devpost draft](docs/devpost-draft.md), and [acceptance checklist](docs/acceptance.md).
 

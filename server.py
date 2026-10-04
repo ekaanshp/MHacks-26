@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+import agent_tasks
 import bank
 import calls
 import claims
@@ -25,7 +26,16 @@ import letters
 import llm
 import pipeline
 from config import DATA_DIR, ROOT, get_settings
-from models import Account, AccountUpdate, CallRequest, ClaimUpdate, Estate, Question, VoiceConversation
+from models import (
+    Account,
+    AccountUpdate,
+    AgentTaskUpdate,
+    CallRequest,
+    ClaimUpdate,
+    Estate,
+    Question,
+    VoiceConversation,
+)
 from secure_storage import ensure_private_directory, read_json, read_text, write_text
 from security import SecurityMiddleware, configuration_error
 
@@ -375,6 +385,60 @@ def agent_claim_update(claim_id: str, body: ClaimUpdate, request: Request):
                 db.update_account(estate["estate_id"], account["id"], status="in_progress")
             db.log_activity(estate["estate_id"], account["id"], "Insurer agent", f"claim:{body.status}")
     return claim
+
+
+@app.post("/api/agent-task/{acct_id}")
+def start_agent_task(acct_id: str):
+    result = get_estate()
+    account = get_account(result, acct_id)
+    if (result.get("analysis") or {}).get("synthetic") is not True:
+        raise HTTPException(403, "The demonstration company agent handles synthetic estates only.")
+    try:
+        task = agent_tasks.create(account, result["persona"], get_settings().family_executor)
+    except claims.ClaimsNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return task
+
+
+@app.get("/api/agent-task/{acct_id}")
+def agent_task_status(acct_id: str):
+    result = get_estate()
+    get_account(result, acct_id)
+    return agent_tasks.latest(acct_id, result["persona"]) or {"status": None}
+
+
+@app.get("/api/agent/tasks")
+def agent_pending_tasks(request: Request):
+    require_agent(request)
+    result = get_estate()
+    agent_guard(request, result)
+    if (result.get("analysis") or {}).get("synthetic") is not True:
+        raise HTTPException(403, "The demonstration company agent handles synthetic estates only.")
+    return {"tasks": agent_tasks.pending(result["persona"])}
+
+
+@app.post("/api/agent/tasks/{task_id}")
+def agent_task_update(task_id: str, body: AgentTaskUpdate, request: Request):
+    require_agent(request)
+    result = get_estate()
+    agent_guard(request, result)
+    if (result.get("analysis") or {}).get("synthetic") is not True:
+        raise HTTPException(403, "The demonstration company agent handles synthetic estates only.")
+    try:
+        task = agent_tasks.update(task_id, result["persona"], **body.model_dump())
+    except KeyError as exc:
+        raise HTTPException(404, "Agent task not found in this estate.") from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    account = get_account(result, task["account_id"])
+    if task["status"] == "completed" and account["status"] != "done":
+        db.update_account(result["estate_id"], account["id"], status="done")
+        db.log_activity(result["estate_id"], account["id"], "Company agent", "status:done")
+    return task
 
 
 @app.get("/api/call/{conversation_id}")

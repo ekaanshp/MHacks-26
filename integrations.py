@@ -83,6 +83,7 @@ def _eleven(method: str, path: str, *, payload: dict[str, Any] | None = None) ->
 
 def agent_config(voice_id: str | None = None) -> dict[str, Any]:
     config: dict[str, Any] = {
+        "turn": {"turn_timeout": 20.0, "silence_end_call_timeout": -1.0},
         "agent": {
             "first_message": calls.FIRST_MESSAGE,
             "language": "en",

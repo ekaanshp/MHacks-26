@@ -32,6 +32,30 @@ def claims_protocol() -> Protocol:
     return Protocol(name=PROTOCOL_NAME, version=PROTOCOL_VERSION)
 
 
+class AccountTaskRequest(Model):
+    request_id: str
+    institution: str
+    action: str
+    category: str
+    stage: str = "intro"
+    person_name: str = ""
+    date_of_death: str = ""
+    executor_name: str = ""
+    message: str = ""
+
+
+class AccountTaskResponse(Model):
+    request_id: str
+    status: str
+    message: str
+    reference_number: str | None = None
+    required_documents: list[str] = []
+
+
+def tasks_protocol() -> Protocol:
+    return Protocol(name="LastlyAccountAction", version="1.0.0")
+
+
 class LocalFirstResolver(Resolver):
     """Use a known local endpoint for a peer agent; otherwise resolve through the Almanac."""
 

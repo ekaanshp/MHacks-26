@@ -201,11 +201,11 @@ def build_agent():
 
     insurer = os.getenv("CLAIMS_AGENT_ADDRESS", "").strip()
     company = company_address()
-    local_endpoint = os.getenv("LASTLY_AGENT_ENDPOINT", "").strip()
     CLAIM_FIELDS = ("request_id", "policyholder_name", "date_of_death", "institution", "policy_type", "claimant_name")
     agent = Agent(name="Lastly Estate Assistant", seed=settings.agent_seed,
-                  port=settings.agent_port, mailbox=settings.agent_mailbox and not local_endpoint,
-                  endpoint=[local_endpoint] if local_endpoint else None,
+                  # Keep the Agentverse mailbox so ASI:One can reach this agent. Local peers (the
+                  # demo company agent) deliver to this agent's /submit through their own resolver.
+                  port=settings.agent_port, mailbox=settings.agent_mailbox,
                   description=AGENT_DESCRIPTION, publish_agent_details=True, loop=loop,
                   resolve=LocalFirstResolver({insurer: os.getenv("CLAIMS_AGENT_ENDPOINT", ""),
                                              company: os.getenv("COMPANY_AGENT_ENDPOINT", "") or os.getenv("CLAIMS_AGENT_ENDPOINT", "")}))
@@ -288,7 +288,7 @@ def main() -> None:
         agent = build_agent()
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
-    print("Starting Lastly's Fetch.ai agent. A configured LASTLY_AGENT_ENDPOINT uses local delivery; otherwise connect Mailbox.")
+    print("Starting Lastly's Fetch.ai agent. Use its Agent Inspector link to connect Mailbox; local demo agents reply directly.")
     print("Public replies use the synthetic demo only. Private replies require an explicit sender allowlist and cloud consent.")
     agent.run()
 

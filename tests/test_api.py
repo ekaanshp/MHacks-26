@@ -162,3 +162,36 @@ def test_list_answers_name_everything_and_expand_on_request(client):
     assert "more:" not in full
     expenses = client.post("/api/ask", json={"question": "Summarize income and expenses."}).json()["answer"]
     assert all(name in expenses for name in charging)
+
+
+def test_summary_progress_follows_shared_statuses_and_demo_reset_clears_it(client):
+    estate = client.get("/api/estate").json()
+    gym = next(a for a in estate["accounts"] if a["institution"] == "Planet Fitness")
+    prime = next(a for a in estate["accounts"] if a["institution"] == "Amazon Prime")
+    start = client.get("/api/progress").json()
+    assert start["monthly_remaining"] == start["monthly_original"] == estate["totals"]["monthly_drain"] and start["stopped"] == []
+    client.patch(f"/api/account/{gym['id']}", json={"status": "done"})
+    client.patch(f"/api/account/{prime['id']}", json={"status": "done"})
+    live = client.get("/api/progress").json()
+    assert live["stopped"] == ["Amazon Prime", "Planet Fitness"]
+    assert live["monthly_stopped"] == round(gym["amount"] + prime["amount"] / 12, 2)
+    assert live["monthly_remaining"] == round(start["monthly_original"] - live["monthly_stopped"], 2)
+    client.patch(f"/api/account/{gym['id']}", json={"status": "open"})
+    assert client.get("/api/progress").json()["stopped"] == ["Amazon Prime"]
+    # The demo reset used on server start returns everything to zero.
+    server.reset_demo(client.get("/api/estate").json())
+    assert client.get("/api/progress").json()["monthly_remaining"] == start["monthly_original"]
+    assert client.get("/api/activity").json()["activity"] == []
+    assert all(a["status"] == "open" and not a["assigned_to"] for a in client.get("/api/estate").json()["accounts"])
+
+
+def test_changes_are_attributed_to_the_chosen_relative(client):
+    family = client.get("/api/family").json()
+    assert [person["name"] for person in family["relatives"]] == ["Daniel", "Sarah"]
+    assert family["deceased"] and next(p for p in family["relatives"] if p["name"] == "Daniel")["executor"] is True
+    netflix = next(a for a in client.get("/api/estate").json()["accounts"] if a["institution"] == "Netflix")
+    client.patch(f"/api/account/{netflix['id']}", json={"status": "done"}, headers={"X-Lastly-Actor": "sarah"})
+    client.patch(f"/api/account/{netflix['id']}", json={"status": "open"}, headers={"X-Lastly-Actor": "Mallory"})
+    actors = [row["actor"] for row in client.get("/api/activity").json()["activity"][:2]]
+    # Unknown names fall back to the executor; a chosen relative is recorded by name.
+    assert actors == ["Daniel", "Sarah"]

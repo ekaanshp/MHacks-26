@@ -41,9 +41,9 @@ def _settings():
 
 def _data_dir() -> Path:
     # Read the environment at call time, including in tests and Takeout runs.
-    from config import DATA_DIR
+    from config import data_dir
 
-    return Path(os.environ.get("LASTLY_DATA_DIR", str(DATA_DIR)))
+    return data_dir()
 
 
 def _empty_store() -> dict[str, Any]:
@@ -658,3 +658,43 @@ def get_activity(estate_id: int | None = None, limit: int = 20) -> list[dict[str
         # adjusted. Replayed rows replace their original positions in the store.
         rows.reverse()
         return [_public_activity(copy.deepcopy(row)) for row in rows[:limit]]
+
+
+def register_relatives(persona: dict[str, Any], relatives: list[dict[str, Any]]) -> None:
+    """Record the deceased person's relatives in Neon (each linked to a private member id)."""
+    if not relatives or not _database_configured():
+        return
+    try:
+        with _connection() as connection:
+            connection.execute((Path(__file__).parent / "schema.sql").read_text(encoding="utf-8"))
+            for relative in relatives:
+                connection.execute(
+                    "INSERT INTO relatives (deceased_name, deceased_email, relative_name, relationship, is_executor, member_id) "
+                    "VALUES (%s, %s, %s, %s, %s, lastly_member_id(%s)) ON CONFLICT (deceased_email, relative_name) "
+                    "DO UPDATE SET relationship = EXCLUDED.relationship, is_executor = EXCLUDED.is_executor, member_id = EXCLUDED.member_id",
+                    (persona.get("name", ""), str(persona.get("email", "")).casefold(), relative["name"], relative["relationship"],
+                     relative["executor"], relative["name"]),
+                )
+    except _database_errors():
+        _database_unavailable()
+
+
+def clear_activity(persona: dict[str, Any]) -> None:
+    """Remove this person's family activity (demo resets only), in Neon and the local store."""
+    key = _persona_key(persona)
+    if _database_configured():
+        try:
+            with _connection() as connection:
+                connection.execute(
+                    "DELETE FROM activity WHERE estate_id IN (SELECT id FROM estates WHERE lower(coalesce(nullif(persona->>'email', ''), persona->>'name')) = %s)",
+                    (key,),
+                )
+        except _database_errors():
+            _database_unavailable()
+    with _local_lock() as directory:
+        store = _read_store(directory)
+        ids = {estate["estate_id"] for estate in store["estates"] if _persona_key(estate["persona"]) == key}
+        store["activity"] = [row for row in store["activity"] if row.get("estate_id") not in ids]
+        store["pending_activity"] = [row for row in store["pending_activity"] if _persona_key(row["persona"]) != key]
+        store["pending_patches"] = [row for row in store["pending_patches"] if _persona_key(row["persona"]) != key]
+        _write_store(directory, store)

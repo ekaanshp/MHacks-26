@@ -37,6 +37,10 @@ SELECT id, name FROM family_members;
 
 `family_members` gives every assignee a private `mem_…` id. Database triggers link `accounts.assigned_member_id` and `activity.actor_member_id` automatically; agents such as "Insurer agent" are not members. These ids are backend-only: the API and dashboard return names, never member ids. Member ids exist in Neon only, not in the local JSON fallback.
 
+**Relatives and live sync.** `FAMILY_RELATIVES` (default `Daniel:son,Sarah:daughter`; the `FAMILY_EXECUTOR` is marked executor) lists the deceased person's relatives. On startup they are stored in Neon's `relatives` table, each linked to a private member id; `family_overview` shows each relative's assignments and updates. In the app, **Viewing as** chooses which relative is acting (also `?as=Sarah` in the URL); changes and activity are recorded under that name. It is an attribution label behind the family access code, not a separate login. Every open dashboard checks the shared estate every few seconds and updates itself when another relative changes something, with a notice such as "Sarah updated Netflix."
+
+**Demo reset.** Start the presenting server with `LASTLY_RESET_ON_START=true` to begin from zero: all synthetic accounts open and unassigned, activity, claims and agent requests cleared. Only set it on the demo server; any server started with it resets the shared estate for everyone.
+
 With no `DATABASE_URL`, the Family Hub uses the local JSON store. During a Neon outage the adapter serves its local mirror and queues family edits, replaying them when Neon is reachable again; the terminal logs that Neon is unavailable. Imported (non-synthetic) estates are never uploaded unless `ALLOW_PRIVATE_CLOUD=true`. Share the connection string privately, never in the repo.
 
 ## ElevenLabs in the browser (no phone number needed)

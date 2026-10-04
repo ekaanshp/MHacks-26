@@ -167,9 +167,43 @@ SELECT a.estate_id, a.person_name AS person, a.id AS account_id, a.institution,
        a.data->>'category' AS category, a.data->>'bucket' AS bucket,
        (a.data->>'amount')::numeric AS amount, a.data->>'frequency' AS frequency,
        a.status, a.assigned_to, a.assigned_member_id, a.updated_at,
-       a.estate_id = (SELECT max(id) FROM estates) AS is_latest
+       a.estate_id = (SELECT max(e2.id) FROM estates e2 JOIN estates e1 ON e1.person_email = e2.person_email
+                      WHERE e1.id = a.estate_id) AS is_latest
 FROM accounts a;
 
 CREATE OR REPLACE VIEW activity_overview AS
 SELECT id, created_at, description, actor, actor_member_id, action, institution, person_name, account_id, estate_id
 FROM activity;
+
+-- The deceased person's relatives. Each relative is a family member with a private id.
+CREATE TABLE IF NOT EXISTS relatives (
+    id SERIAL PRIMARY KEY,
+    deceased_name TEXT NOT NULL,
+    deceased_email TEXT NOT NULL,
+    relative_name TEXT NOT NULL,
+    relationship TEXT NOT NULL,
+    is_executor BOOLEAN NOT NULL DEFAULT false,
+    member_id TEXT REFERENCES family_members(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (deceased_email, relative_name)
+);
+
+CREATE OR REPLACE VIEW family_overview AS
+SELECT r.deceased_name, r.relative_name, r.relationship, r.is_executor, r.member_id,
+       (SELECT count(*) FROM accounts a WHERE a.assigned_member_id = r.member_id
+          AND a.estate_id = (SELECT max(id) FROM estates e WHERE e.person_email = r.deceased_email)) AS accounts_assigned,
+       (SELECT count(*) FROM activity v WHERE v.actor_member_id = r.member_id) AS updates_made,
+       (SELECT max(v.created_at) FROM activity v WHERE v.actor_member_id = r.member_id) AS last_update
+FROM relatives r;
+
+-- One row per deceased person (their latest analysis), with relatives and progress.
+CREATE OR REPLACE VIEW people_overview AS
+SELECT e.person_name AS deceased, e.date_of_death, e.person_city AS city,
+       (SELECT string_agg(r.relative_name || ' (' || r.relationship || ')', ', ' ORDER BY r.is_executor DESC, r.relative_name)
+          FROM relatives r WHERE r.deceased_email = e.person_email) AS relatives,
+       e.accounts_found,
+       (SELECT count(*) FROM accounts a WHERE a.estate_id = e.id AND a.status = 'done') AS accounts_done,
+       (SELECT count(*) FROM accounts a WHERE a.estate_id = e.id AND a.status = 'in_progress') AS accounts_in_progress,
+       e.monthly_charges, e.assets_found, e.debts_found, e.id AS estate_id
+FROM estates e
+WHERE e.id = (SELECT max(id) FROM estates e2 WHERE e2.person_email = e.person_email);

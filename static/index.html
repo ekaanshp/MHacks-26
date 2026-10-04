@@ -14,15 +14,31 @@
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header" id="site-header">
     <a class="brand" href="/" aria-label="Lastly home"><span class="brand-mark" aria-hidden="true">✳</span><span>Lastly<span class="brand-period">.</span></span></a>
-    <div class="header-family"><span class="header-label">A place for your family</span><div class="avatar-stack" aria-label="Family members Daniel and Sarah"><span class="avatar avatar-sage">D</span><span class="avatar avatar-peach">S</span></div><button class="text-button" id="lock-estate" type="button" hidden>Lock estate</button></div>
+    <div class="header-family"><span class="header-label">A place for your family</span><div class="avatar-stack" id="family-avatars" aria-label="Family members Daniel and Sarah"><span class="avatar avatar-sage">D</span><span class="avatar avatar-peach">S</span></div><button class="text-button" id="lock-estate" type="button" hidden>Lock estate</button></div>
   </header>
   <main id="main" tabindex="-1">
-    <section class="onboarding" id="plan-screen" aria-labelledby="plan-title">
+    <section class="onboarding" id="signin-screen" aria-labelledby="signin-title" hidden>
+      <div class="eyebrow"><span class="tiny-star" aria-hidden="true">✳</span> Welcome to Lastly</div>
+      <h1 id="signin-title">Whose estate are<br>you helping with?</h1>
+      <p class="onboarding-intro">Enter your loved one’s full name exactly as your family registered it,<br>then your first name and how you’re related.</p>
+      <form class="signin-form" id="signin-form" novalidate>
+        <label class="field-label" for="signin-deceased">Your loved one’s full name</label>
+        <input id="signin-deceased" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="120" placeholder="Full name, e.g. Margaret Ellis">
+        <label class="field-label" for="signin-name">Your first name</label>
+        <input id="signin-name" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="60" placeholder="e.g. Sarah">
+        <label class="field-label" for="signin-relationship">Your relationship to them</label>
+        <input id="signin-relationship" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="40" placeholder="e.g. daughter">
+        <p class="inline-error" id="signin-error" role="alert" hidden></p>
+        <button class="button button-primary" type="submit" id="signin-submit">Continue <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="quiet-note">Names must match exactly, including capital letters.</p>
+    </section>
+    <section class="onboarding" id="plan-screen" aria-labelledby="plan-title" hidden>
       <div class="eyebrow"><span class="tiny-star" aria-hidden="true">✳</span> A thoughtful start</div>
       <h1 id="plan-title">How Margaret’s inbox<br>was connected</h1>
       <p class="onboarding-intro">A little planning makes a difficult time a little easier.<br>Here’s how her family can begin.</p>
       <div class="connection-options">
-        <article class="connection-card selected"><span class="option-icon" aria-hidden="true">♡</span><span class="selected-check" aria-hidden="true">✓</span><h2>She set up Lastly<br>in advance</h2><p>Margaret chose to share her account information with her family when the time came.</p><span class="option-tag">Connected for Daniel</span></article>
+        <article class="connection-card selected"><span class="option-icon" aria-hidden="true">♡</span><span class="selected-check" aria-hidden="true">✓</span><h2>She set up Lastly<br>in advance</h2><p>Margaret chose to share her account information with her family when the time came.</p><span class="option-tag" id="connected-for">Connected for Daniel</span></article>
         <article class="connection-card"><span class="option-icon" aria-hidden="true">✉</span><h2>Connect Gmail<br>or Outlook</h2><p>With authorized access, connect an inbox to find the accounts that need your attention.</p><span class="option-tag muted-tag">Coming soon</span></article>
         <article class="connection-card"><span class="option-icon" aria-hidden="true">↥</span><h2>Upload a Google<br>Takeout export</h2><p>Use a downloaded copy of an inbox. A local import is available in the setup guide.</p><span class="option-tag muted-tag">Upload coming soon</span></article>
       </div>

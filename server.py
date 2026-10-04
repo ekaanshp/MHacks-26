@@ -7,7 +7,7 @@ import os
 import re
 import statistics
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -21,11 +21,12 @@ import agent_tasks
 import bank
 import calls
 import claims
+import config
 import db
 import letters
 import llm
 import pipeline
-from config import DATA_DIR, ROOT, get_settings
+from config import ROOT, get_settings
 from models import (
     Account,
     AccountUpdate,
@@ -33,17 +34,65 @@ from models import (
     CallRequest,
     ClaimUpdate,
     Estate,
+    Identify,
     Question,
     VoiceConversation,
 )
-from secure_storage import ensure_private_directory, read_json, read_text, write_text
+from secure_storage import ensure_private_directory, read_json, read_text, write_json, write_text
 from security import SecurityMiddleware, configuration_error
 
 _ANALYSIS_LOCK = threading.Lock()
+def relatives(persona: dict | None = None) -> list[dict]:
+    """The deceased person's relatives: listed in a synthetic persona, else FAMILY_RELATIVES ("Name:relationship,...")."""
+    if persona is None:
+        try:
+            persona = read_inbox().get("persona") or {}
+        except HTTPException:
+            persona = {}
+    listed = persona.get("relatives")
+    if isinstance(listed, list) and listed:
+        return [{"name": str(person["name"]), "relationship": str(person["relationship"]), "executor": bool(person.get("executor"))}
+                for person in listed if isinstance(person, dict) and person.get("name") and person.get("relationship")]
+    executor = get_settings().family_executor
+    people = []
+    for item in os.getenv("FAMILY_RELATIVES", "Daniel:son,Sarah:daughter").split(","):
+        name, _, relationship = item.partition(":")
+        name = name.strip()
+        if name and len(name) <= 60 and not any(person["name"].casefold() == name.casefold() for person in people):
+            people.append({"name": name, "relationship": relationship.strip() or "relative", "executor": name == executor})
+    return people
+
+
+def executor(persona: dict | None = None) -> str:
+    """The relative acting as executor for this estate."""
+    named = next((person["name"] for person in relatives(persona) if person["executor"]), "")
+    return named or get_settings().family_executor or "the family representative"
+
+
+def actor(request: Request) -> str:
+    """The relative making a change. A label chosen in the app, not a verified identity."""
+    chosen = request.headers.get("X-Lastly-Actor", "").strip()
+    names = {person["name"].casefold(): person["name"] for person in relatives()}
+    return names.get(chosen.casefold(), executor())
+
+
+@contextmanager
+def estate_context(path: Path):
+    """Work against one estate's data directory, always restoring the previous one."""
+    token = config.use_data_dir(path)
+    try:
+        yield
+    finally:
+        config.reset_data_dir(token)
+
+
+def monthly_cost(account: dict) -> float:
+    amount = float(account.get("amount") or 0)
+    return amount / 12 if account.get("frequency") == "annual" else amount if account.get("frequency") == "monthly" else 0.0
 
 
 def data_dir() -> Path:
-    return Path(os.getenv("LASTLY_DATA_DIR", str(DATA_DIR)))
+    return config.data_dir()
 
 
 def read_inbox() -> dict:
@@ -99,6 +148,17 @@ def initialize() -> None:
     inbox = read_inbox()
     if inbox.get("synthetic") is not True and (not get_settings().access_token or not os.getenv("LASTLY_DATA_KEY")):
         raise RuntimeError("Private estates require LASTLY_ACCESS_TOKEN and LASTLY_DATA_KEY before startup.")
+    # The other synthetic people share the root's demo date, so every laptop generates identical files.
+    if inbox.get("synthetic") is True and os.getenv("LASTLY_EXTRA_ESTATES", "true").lower() not in {"0", "false", "no", "off"}:
+        import generate_people
+        generate_people.ensure(data_dir(), inbox.get("today"))
+    for path in config.estates().values():
+        with estate_context(path):
+            prepare_estate()
+
+
+def prepare_estate() -> None:
+    """Secure, analyze and register one estate (the data directory currently in use)."""
     # Upgrade existing runtime artifacts to owner-only, encrypted storage when a key is set.
     for name in ("inbox.json", "bank.csv"):
         path = data_dir() / name
@@ -116,6 +176,22 @@ def initialize() -> None:
     cached = db.load_estate()
     if not cached or (cached.get("analysis") or {}).get("source_hash") != pipeline.source_hash(data_dir()):
         pipeline.run(mock=True, data_dir=data_dir())
+    estate = db.load_estate()
+    if estate and (estate.get("analysis") or {}).get("synthetic") is True:
+        db.register_relatives(estate["persona"], relatives(estate["persona"]))
+        if os.getenv("LASTLY_RESET_ON_START", "").lower() in {"1", "true", "yes", "on"}:
+            reset_demo(estate)
+
+
+def reset_demo(estate: dict) -> None:
+    """Return the synthetic demo to a clean start: every account open, no activity, claims or agent tasks."""
+    for account in estate["accounts"]:
+        if account["status"] != "open" or account.get("assigned_to"):
+            db.update_account(estate["estate_id"], account["id"], status="open", assigned_to=None)
+    db.clear_activity(estate["persona"])
+    for name in ("runtime_claims.json", "runtime_agent_tasks.json"):
+        if (data_dir() / name).exists():
+            write_json(data_dir() / name, {})
 
 
 @asynccontextmanager
@@ -204,7 +280,7 @@ def bank_row(row_id: str):
 
 
 @app.patch("/api/account/{acct_id}", response_model=Account)
-def update_account(acct_id: str, update: AccountUpdate):
+def update_account(acct_id: str, update: AccountUpdate, request: Request):
     result = get_estate()
     account = get_account(result, acct_id)
     values = update.model_dump(exclude_unset=True)
@@ -213,8 +289,60 @@ def update_account(acct_id: str, update: AccountUpdate):
     saved = db.update_account(result["estate_id"], acct_id, **values)
     for key, value in values.items():
         if account.get(key) != value:
-            db.log_activity(result["estate_id"], acct_id, "Me", f"status:{value}" if key == "status" else f"assigned:{value or 'Unassigned'}")
+            db.log_activity(result["estate_id"], acct_id, actor(request), f"status:{value}" if key == "status" else f"assigned:{value or 'Unassigned'}")
     return saved
+
+
+@app.get("/api/progress")
+def progress():
+    """Live summary from the shared account statuses, so every relative's screen agrees."""
+    result = get_estate()
+    accounts = result["accounts"]
+    stopped = [account for account in accounts if account["bucket"] == "leaving" and account["active"] and account["status"] == "done"]
+    original = float(result["totals"].get("monthly_drain") or 0)
+    saved = round(sum(monthly_cost(account) for account in stopped), 2)
+    opened = []
+    for account in accounts:
+        if account["action"] == "claim":
+            claim = claims.latest(account["id"], result["persona"])
+            if claim and claim.get("status") == "opened":
+                opened.append({"institution": account["institution"], "amount": account["amount"]})
+    return {
+        "monthly_original": round(original, 2),
+        "monthly_remaining": round(max(0.0, original - saved), 2),
+        "monthly_stopped": saved,
+        "stopped": sorted(account["institution"] for account in stopped),
+        "claims_in_progress": opened,
+    }
+
+
+@app.get("/api/family")
+def family():
+    result = get_estate()
+    persona = result["persona"]
+    return {"deceased": persona.get("name", ""), "executor": executor(persona), "pronoun": persona.get("pronoun", "she"),
+            "relatives": [{"name": person["name"], "relationship": person["relationship"], "executor": person["executor"]} for person in relatives(persona)]}
+
+
+@app.post("/api/identify")
+def identify(body: Identify):
+    """Match the deceased person's exact full name with one of their relatives; no list of estates is revealed."""
+    deceased, name, relationship = body.deceased.strip(), body.name.strip(), body.relationship.strip()
+    for slug, path in config.estates().items():
+        with estate_context(path):
+            try:
+                persona = read_inbox().get("persona") or {}
+            except HTTPException:
+                continue
+            people = relatives(persona)
+        if persona.get("name") != deceased:
+            continue
+        person = next((p for p in people if p["name"] == name and p["relationship"].casefold() == relationship.casefold()), None)
+        if person:
+            return {"found": True, "estate": slug, "deceased": deceased, "name": person["name"], "relationship": person["relationship"],
+                    "executor": person["executor"], "pronoun": persona.get("pronoun", "she")}
+    # A non-match is an ordinary answer, not an error; it never reveals which part was wrong.
+    return {"found": False, "message": "We couldn’t find that person and relative. Check the spelling and capital letters, then try again."}
 
 
 @app.get("/api/activity")
@@ -255,7 +383,7 @@ def place_call(acct_id: str, body: CallRequest, request: Request):
         "persona": calls.persona_fingerprint(result["persona"]),
         "account": acct_id, "to": body.to_number, "principal": request.state.principal,
         "action": account["action"], "institution": account["institution"], "category": account["category"],
-        "executor": get_settings().family_executor,
+        "executor": executor(result["persona"]),
         "agent": get_settings().elevenlabs_agent_id,
         "phone_identity": get_settings().elevenlabs_phone_number_id,
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -274,7 +402,7 @@ def place_call(acct_id: str, body: CallRequest, request: Request):
     try:
         response = calls.place_call(account, result["persona"], body.to_number)
         calls.complete_call(key, response)
-        db.log_activity(result["estate_id"], acct_id, get_settings().family_executor, "call:placed")
+        db.log_activity(result["estate_id"], acct_id, actor(request), "call:placed")
         return response
     except calls.IntegrationNotConfigured as exc:
         calls.fail_call(key, safe_no_call=True)
@@ -324,12 +452,12 @@ def finish_voice(acct_id: str, body: VoiceConversation, request: Request):
         raise HTTPException(502, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    db.log_activity(result["estate_id"], acct_id, get_settings().family_executor, "call:browser")
+    db.log_activity(result["estate_id"], acct_id, actor(request), "call:browser")
     return response
 
 
 @app.post("/api/claim/{acct_id}")
-def start_claim(acct_id: str):
+def start_claim(acct_id: str, request: Request):
     """Queue an insurance claim for Lastly's Fetch.ai agent to send to the insurer's agent."""
     result = get_estate()
     account = get_account(result, acct_id)
@@ -338,11 +466,11 @@ def start_claim(acct_id: str):
     if account["action"] != "claim":
         raise HTTPException(400, "Only policies the estate can claim can be sent to an insurer's agent.")
     try:
-        claim = claims.create(account, result["persona"], get_settings().family_executor)
+        claim = claims.create(account, result["persona"], executor(result["persona"]))
     except claims.ClaimsNotConfigured as exc:
         raise HTTPException(503, str(exc)) from exc
     if claim["status"] == "queued":
-        db.log_activity(result["estate_id"], acct_id, get_settings().family_executor, "claim:requested")
+        db.log_activity(result["estate_id"], acct_id, actor(request), "claim:requested")
     return claim
 
 
@@ -362,29 +490,37 @@ def require_agent(request: Request) -> None:
 @app.get("/api/agent/claims")
 def agent_pending_claims(request: Request):
     require_agent(request)
-    return {"claims": claims.pending()}
+    pending = []
+    for path in config.estates().values():
+        with estate_context(path):
+            pending += claims.pending()
+    return {"claims": pending}
 
 
 @app.post("/api/agent/claims/{claim_id}")
 def agent_claim_update(claim_id: str, body: ClaimUpdate, request: Request):
     require_agent(request)
-    try:
-        claim = claims.update(claim_id, body.status, responder=body.responder, claim_number=body.claim_number,
-                              required_documents=body.required_documents, message=body.message)
-    except KeyError as exc:
-        raise HTTPException(404, "Claim not found.") from exc
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    if body.status in {"opened", "rejected"}:
-        estate = db.load_estate()
-        account = next((item for item in (estate or {}).get("accounts", []) if item["id"] == claim["account_id"]), None)
-        if estate and account:
-            if body.status == "opened" and account["status"] == "open":
-                db.update_account(estate["estate_id"], account["id"], status="in_progress")
-            db.log_activity(estate["estate_id"], account["id"], "Insurer agent", f"claim:{body.status}")
-    return claim
+    # Claim ids are unique across estates; the estate that holds this claim applies the answer.
+    for path in config.estates().values():
+        with estate_context(path):
+            try:
+                claim = claims.update(claim_id, body.status, responder=body.responder, claim_number=body.claim_number,
+                                      required_documents=body.required_documents, message=body.message)
+            except KeyError:
+                continue
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            if body.status in {"opened", "rejected"}:
+                estate = db.load_estate()
+                account = next((item for item in (estate or {}).get("accounts", []) if item["id"] == claim["account_id"]), None)
+                if estate and account:
+                    if body.status == "opened" and account["status"] == "open":
+                        db.update_account(estate["estate_id"], account["id"], status="in_progress")
+                    db.log_activity(estate["estate_id"], account["id"], "Insurer agent", f"claim:{body.status}")
+            return claim
+    raise HTTPException(404, "Claim not found.")
 
 
 @app.post("/api/agent-task/{acct_id}")
@@ -394,7 +530,7 @@ def start_agent_task(acct_id: str):
     if (result.get("analysis") or {}).get("synthetic") is not True:
         raise HTTPException(403, "The demonstration company agent handles synthetic estates only.")
     try:
-        task = agent_tasks.create(account, result["persona"], get_settings().family_executor)
+        task = agent_tasks.create(account, result["persona"], executor(result["persona"]))
     except claims.ClaimsNotConfigured as exc:
         raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
@@ -412,33 +548,44 @@ def agent_task_status(acct_id: str):
 @app.get("/api/agent/tasks")
 def agent_pending_tasks(request: Request):
     require_agent(request)
-    result = get_estate()
-    agent_guard(request, result)
-    if (result.get("analysis") or {}).get("synthetic") is not True:
-        raise HTTPException(403, "The demonstration company agent handles synthetic estates only.")
-    return {"tasks": agent_tasks.pending(result["persona"])}
+    pending = []
+    for path in config.estates().values():
+        with estate_context(path):
+            result = get_estate()
+            # The demonstration company agent handles synthetic estates only.
+            if (result.get("analysis") or {}).get("synthetic") is True:
+                agent_guard(request, result)
+                pending += agent_tasks.pending(result["persona"])
+    return {"tasks": pending}
 
 
 @app.post("/api/agent/tasks/{task_id}")
 def agent_task_update(task_id: str, body: AgentTaskUpdate, request: Request):
     require_agent(request)
-    result = get_estate()
-    agent_guard(request, result)
-    if (result.get("analysis") or {}).get("synthetic") is not True:
-        raise HTTPException(403, "The demonstration company agent handles synthetic estates only.")
-    try:
-        task = agent_tasks.update(task_id, result["persona"], **body.model_dump())
-    except KeyError as exc:
-        raise HTTPException(404, "Agent task not found in this estate.") from exc
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    account = get_account(result, task["account_id"])
-    if task["status"] == "completed" and account["status"] != "done":
-        db.update_account(result["estate_id"], account["id"], status="done")
-        db.log_activity(result["estate_id"], account["id"], "Company agent", "status:done")
-    return task
+    for path in config.estates().values():
+        with estate_context(path):
+            result = get_estate()
+            if (result.get("analysis") or {}).get("synthetic") is not True:
+                continue
+            agent_guard(request, result)
+            try:
+                task = agent_tasks.update(task_id, result["persona"], **body.model_dump())
+            except KeyError:
+                continue
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            account = get_account(result, task["account_id"])
+            if task["status"] == "completed" and account["status"] != "done":
+                db.update_account(result["estate_id"], account["id"], status="done")
+                db.log_activity(result["estate_id"], account["id"], "Company agent", "status:done")
+            elif task["status"] == "pending" and account["status"] == "open":
+                # The company accepted the request but needs documents: the family has work in progress.
+                db.update_account(result["estate_id"], account["id"], status="in_progress")
+                db.log_activity(result["estate_id"], account["id"], "Company agent", "status:in_progress")
+            return task
+    raise HTTPException(404, "Agent task not found.")
 
 
 @app.get("/api/call/{conversation_id}")
@@ -473,7 +620,7 @@ def offline_answer(result: dict, lower: str, selected: list[dict]) -> dict | Non
         found = f" For {name}, it found {len(accounts)} accounts" + (f", including a ${insurance['amount']:,.0f} {insurance['institution']} life insurance policy" if insurance and insurance["amount"] else "") + "."
         return {"answer": "I'm Lastly's estate assistant. When someone dies, I help their family find every account they left behind: subscriptions still charging, money waiting to be claimed, agencies to notify, debts and online accounts. "
                           "I read their email and bank statement and cite the exact email or bank row behind every answer." + found +
-                          "\nTry asking: \"Did Margaret have life insurance?\", \"Which accounts are still charging?\", \"What renews in the next 14 days?\" or \"What are the next steps?\" "
+                          f"\nTry asking: \"Did {name.split()[0]} have life insurance?\", \"Which accounts are still charging?\", \"What renews in the next 14 days?\" or \"What are the next steps?\" "
                           "This public demo uses synthetic data.",
                 "evidence_ids": [insurance["evidence_ids"][0]] if insurance and insurance["evidence_ids"] else []}
     if any(word in lower for word in ("executor", "attorney", "lawyer", "probate", "estate planning", "next step")):

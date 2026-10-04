@@ -37,6 +37,12 @@ class Account(BaseModel):
     assigned_to: str | None = None
 
 
+class Relative(BaseModel):
+    name: str
+    relationship: str
+    executor: bool = False
+
+
 class Persona(BaseModel):
     name: str = ""
     email: str = ""
@@ -44,6 +50,10 @@ class Persona(BaseModel):
     city: str = ""
     date_of_death: str
     bio: str = ""
+    # Synthetic multi-family demo: pronoun for display, the executor and the relatives.
+    pronoun: str = "she"
+    executor: str = ""
+    relatives: list[Relative] = Field(default_factory=list)
 
 
 class Stats(BaseModel):
@@ -136,3 +146,11 @@ class AgentTaskUpdate(BaseModel):
     @classmethod
     def short_documents(cls, value: list[str]) -> list[str]:
         return ClaimUpdate.short_documents(value)
+
+
+class Identify(BaseModel):
+    """Start-screen details: the deceased person's exact full name and the relative signing in."""
+    model_config = ConfigDict(extra="forbid")
+    deceased: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=60)
+    relationship: str = Field(min_length=1, max_length=40)

@@ -22,6 +22,9 @@ def dataset(monkeypatch, tmp_path):
     monkeypatch.setenv("LASTLY_ALLOWED_ORIGINS", "")
     monkeypatch.setenv("LASTLY_ALLOWED_CALL_NUMBERS", "")
     monkeypatch.setenv("ALLOW_PRIVATE_CLOUD", "false")
+    # Most tests use one estate; tests for the five-person demo enable the others explicitly.
+    monkeypatch.setenv("LASTLY_EXTRA_ESTATES", "false")
+    monkeypatch.delenv("LASTLY_RESET_ON_START", raising=False)
     monkeypatch.setattr(pipeline, "DATA_DIR", tmp_path)
     generate_inbox(today=date(2026, 10, 3), output_dir=tmp_path)
     return tmp_path

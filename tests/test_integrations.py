@@ -29,7 +29,6 @@ def call_settings(monkeypatch, tmp_path):
     settings = SimpleNamespace(offline=False, elevenlabs_api_key="test-key", elevenlabs_agent_id="test-agent",
                                elevenlabs_phone_number_id="test-phone", family_executor="Daniel")
     monkeypatch.setattr(calls, "get_settings", lambda: settings)
-    monkeypatch.setattr(calls, "DATA_DIR", tmp_path)
     monkeypatch.setenv("LASTLY_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(calls.llm, "enabled", lambda: False)
     return settings

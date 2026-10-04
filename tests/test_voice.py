@@ -157,3 +157,33 @@ def test_identity_questions_are_not_family_next_steps_but_documents_are():
     summary = calls.summarize_transcript(transcript)
     assert summary["cancelled"] is True
     assert summary["next_steps"] == ["Please email a copy of the death certificate for our records."]
+
+
+QUESTION = "Just to confirm for the family: has the Planet Fitness account been cancelled?"
+
+
+@pytest.mark.parametrize("answer", ["Yes.", "Yeah", "yup!", "Yep, all done.", "Correct.", "That's right, it has been."])
+def test_short_yes_to_the_closing_question_confirms(answer):
+    transcript = [{"role": "user", "message": "Okay, I've taken care of that. Reference PF-20931."},
+                  {"role": "agent", "message": "I have noted reference P F dash two zero nine three one. " + QUESTION},
+                  {"role": "user", "message": answer}]
+    assert calls.summarize_transcript(transcript)["cancelled"] is True
+
+
+@pytest.mark.parametrize("answer", ["No, not yet.", "Nope.", "Not yet, we need the death certificate first.",
+                                    "Yes, once we receive the death certificate."])
+def test_no_or_conditional_answer_to_the_closing_question_does_not_confirm(answer):
+    transcript = [{"role": "user", "message": "I've cancelled the membership."},
+                  {"role": "agent", "message": QUESTION},
+                  {"role": "user", "message": answer}]
+    assert calls.summarize_transcript(transcript)["cancelled"] is False
+
+
+def test_yes_to_an_unrelated_question_is_not_a_confirmation():
+    transcript = [{"role": "agent", "message": "May I speak with someone who handles bereavement requests?"},
+                  {"role": "user", "message": "Yes, I can help."}]
+    assert calls.summarize_transcript(transcript)["cancelled"] is False
+
+
+def test_closing_question_is_in_the_agent_prompt():
+    assert "has the {{institution}} account been cancelled?" in calls.AGENT_PROMPT

@@ -39,9 +39,23 @@ The fixture uses the generation date as today. Margaret's death is 21 days earli
 
 After updating conversation code, restart the web server and both agent processes, then refresh the page. Run `python manage.py elevenlabs-setup` to apply the caller prompt and longer response window to the configured ElevenLabs agent. Fetch.ai subscription conversations reuse `CLAIMS_AGENT_ADDRESS` and `CLAIMS_AGENT_ENDPOINT`; separate company agent settings are optional.
 
-When `LASTLY_AGENT_ENDPOINT` is set, the Lastly agent listens locally for company replies. Clear it to use Agentverse Mailbox instead; local delivery takes precedence over `AGENT_MAILBOX`.
+The Lastly agent always keeps its Agentverse Mailbox (so ASI:One can reach it). `LASTLY_AGENT_ENDPOINT` only tells the local demo company agent where to deliver replies on the same laptop.
 
 See [the account setup guide](docs/integrations.md), [demo script](docs/demo.md), [role-play](docs/roleplay.md), [pitch deck](docs/pitch.html), [Devpost draft](docs/devpost-draft.md), and [acceptance checklist](docs/acceptance.md).
+
+## Demo families
+
+The start screen asks for the deceased person's full name (exact spelling and capital letters), your first name and your relationship. Each family has its own estate, accounts, activity and Neon records; all data is synthetic.
+
+| Deceased person | Relatives (executor first) |
+|---|---|
+| Margaret Ellis | Daniel (son), Sarah (daughter) |
+| Harold Bennett | Linda (daughter), Michael (son) |
+| Rosa Martinez | Elena (daughter), Carlos (husband) |
+| James Okafor | Grace (wife), David (son) |
+| Eleanor Whitfield | Thomas (son), Anne (granddaughter) |
+
+The four extra people are generated in `data/estates/` on server start from the root inbox's demo date, so every laptop sharing `data/inbox.json` gets identical files (`LASTLY_EXTRA_ESTATES=false` disables them). In Neon, `people_overview` lists every deceased person with relatives and progress.
 
 ## Connect providers later
 

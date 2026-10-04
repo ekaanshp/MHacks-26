@@ -15,8 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import config
 from calls import persona_fingerprint
-from config import DATA_DIR
 from secure_storage import private_file_lock, read_json, write_json
 
 _LOCK = threading.RLock()
@@ -45,7 +45,7 @@ def require_configured() -> str:
 
 
 def _path() -> Path:
-    return Path(os.getenv("LASTLY_DATA_DIR", str(DATA_DIR))) / "runtime_claims.json"
+    return config.data_dir() / "runtime_claims.json"
 
 
 @contextmanager

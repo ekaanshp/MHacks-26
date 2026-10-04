@@ -5,12 +5,11 @@ import os
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import uuid4
 
+import config
 from calls import persona_fingerprint
 from claims import AGENT_ADDRESS, ClaimsNotConfigured
-from config import DATA_DIR
 from secure_storage import private_file_lock, read_json, write_json
 
 _LOCK = threading.RLock()
@@ -23,7 +22,7 @@ def company_address():
 
 
 def _path():
-    return Path(os.getenv("LASTLY_DATA_DIR", str(DATA_DIR))) / "runtime_agent_tasks.json"
+    return config.data_dir() / "runtime_agent_tasks.json"
 
 
 @contextmanager

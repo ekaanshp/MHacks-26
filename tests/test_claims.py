@@ -109,3 +109,15 @@ def test_claim_records_persist_and_evict_only_finished(monkeypatch, tmp_path):
     assert claims.latest("acct_15", persona)["id"] == record["id"]
     with pytest.raises(PermissionError):
         claims.update(record["id"], "opened", responder=OTHER, claim_number="CLM-1")
+
+
+def test_opened_claim_appears_in_session_progress(relay):
+    client, csrf, metlife, agent = relay
+    claim = client.post(f"/api/claim/{metlife}", headers={"X-CSRF-Token": csrf}).json()
+    family_cookies = dict(client.cookies)
+    client.cookies.clear()
+    opened = {"status": "opened", "responder": INSURER, "claim_number": "CLM-000002", "required_documents": [], "message": "ok"}
+    assert client.post(f"/api/agent/claims/{claim['id']}", json=opened, headers=agent).status_code == 200
+    client.cookies.update(family_cookies)
+    claims_now = client.get("/api/progress").json()["claims_in_progress"]
+    assert claims_now == [{"institution": "MetLife", "amount": 50000.0}]

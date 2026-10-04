@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from starlette.responses import JSONResponse
 
+import config
 import secure_storage
 from config import DATA_DIR, get_settings
 
@@ -322,10 +323,17 @@ class SecurityMiddleware:
             return await response(scope, bounded_receive, protected_send)
         if is_api and method in MUTATING:
             operation = path.split("/")[2] if len(path.split("/")) > 2 else "unknown"
-            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12, "agent-task": 12}
+            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12, "agent-task": 12, "identify": 12}
             if operation in limits and not self.consume((operation, context), limits[operation]):
                 return await reject(429, "This operation is temporarily rate limited.", **{"Retry-After": "60"})
         scope.setdefault("state", {}).update(principal=principal, request_id=request_id)
+        # Which deceased person's estate this request is about; unknown values fall back to the root estate.
+        estate_dir = None
+        if is_api and (chosen := headers.get("x-lastly-estate", "").strip()):
+            estate_dir = config.estates().get(chosen)
+            if estate_dir is None:
+                return await reject(404, "That estate was not found.")
+        token = config.use_data_dir(estate_dir) if estate_dir is not None else None
         try:
             await self.app(scope, bounded_receive, protected_send)
         except Exception as exc:
@@ -333,3 +341,6 @@ class SecurityMiddleware:
             if response_started:
                 raise RuntimeError("The response was interrupted.") from None
             await reject(500, "The request could not be completed. Your saved data remains available.")
+        finally:
+            if token is not None:
+                config.reset_data_dir(token)

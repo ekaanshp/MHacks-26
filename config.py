@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import re
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -12,6 +14,57 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env", override=False)
 DATA_DIR = Path(os.getenv("LASTLY_DATA_DIR", str(ROOT / "data"))).expanduser().resolve()
+
+
+# The estate a request works on. Each deceased person has their own data directory:
+# the root data directory plus data/estates/<slug>/. Unset means the root estate.
+_ACTIVE_DIR: ContextVar[Path | None] = ContextVar("lastly_active_data_dir", default=None)
+_REGISTRY: dict[str, object] = {"key": None, "estates": {}}
+
+
+def root_data_dir() -> Path:
+    return Path(os.getenv("LASTLY_DATA_DIR", str(DATA_DIR))).expanduser()
+
+
+def data_dir() -> Path:
+    """The data directory for the estate this request or task is working on."""
+    return _ACTIVE_DIR.get() or root_data_dir()
+
+
+def use_data_dir(path: Path) -> Token:
+    return _ACTIVE_DIR.set(Path(path))
+
+
+def reset_data_dir(token: Token) -> None:
+    _ACTIVE_DIR.reset(token)
+
+
+def slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-") or "estate"
+
+
+def estates() -> dict[str, Path]:
+    """Slug -> data directory for every estate: the root, then each synthetic estate in estates/."""
+    from secure_storage import read_json
+
+    root = root_data_dir()
+    candidates = [root] + sorted(path.parent for path in (root / "estates").glob("*/inbox.json"))
+    key = tuple((str(path), (path / "inbox.json").stat().st_mtime_ns) for path in candidates if (path / "inbox.json").exists())
+    if _REGISTRY["key"] == key:
+        return dict(_REGISTRY["estates"])  # type: ignore[arg-type]
+    found: dict[str, Path] = {}
+    for path in candidates:
+        try:
+            inbox = read_json(path / "inbox.json")
+        except (OSError, ValueError):
+            continue
+        # Only synthetic estates are added from estates/; the root keeps its own privacy rules.
+        if path != root and inbox.get("synthetic") is not True:
+            continue
+        slug = slugify(str((inbox.get("persona") or {}).get("name") or path.name))
+        found.setdefault(slug, path)
+    _REGISTRY.update(key=key, estates=found)
+    return dict(found)
 
 
 def env_bool(name: str, default: bool = False) -> bool:

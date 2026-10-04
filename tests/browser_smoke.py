@@ -131,7 +131,7 @@ def run_browser_checks(base_url: str, screenshots: Path | None, executable: str 
                     body=json.dumps({"detail": "Voice calling is not configured. Add ElevenLabs credentials to enable calls."}),
                 ))
                 try:
-                    page.goto(f"{base_url}/?demo=1")
+                    page.goto(f"{base_url}/?demo=1&estate=margaret-ellis&as=Daniel")
                     page.get_by_role("button", name="Read Margaret").click()
                     page.locator("#dashboard").wait_for(state="visible")
                     assert page.locator(".account-row").count() == len(estate["accounts"])
@@ -202,7 +202,7 @@ def run_browser_checks(base_url: str, screenshots: Path | None, executable: str 
 
                 page.route("**/api/call/browser-test-call", call_progress)
                 try:
-                    page.goto(f"{base_url}/?demo=1")
+                    page.goto(f"{base_url}/?demo=1&estate=margaret-ellis&as=Daniel")
                     page.get_by_role("button", name="Read Margaret").click()
                     page.locator("#dashboard").wait_for(state="visible")
                     page.locator(f'[data-account-id="{gym["id"]}"]').click()
@@ -224,8 +224,8 @@ def run_browser_checks(base_url: str, screenshots: Path | None, executable: str 
                 page.route("**/api/analyze", lambda route: route.fulfill(
                     status=200, content_type="application/json", body=json.dumps(estate),
                 ))
-                page.goto(base_url)
-                assert page.locator("#plan-screen").is_visible()
+                page.goto(f"{base_url}/?estate=margaret-ellis&as=Daniel")
+                page.locator("#plan-screen").wait_for(state="visible")
                 save_screenshot(page, screenshots, "plan-ahead-390")
                 page.get_by_role("button", name="Continue to Margaret").click()
                 page.get_by_role("button", name="Read Margaret").click()
@@ -270,7 +270,7 @@ def run_security_browser_checks(base_url: str, access_code: str, executable: str
         page.on("request", lambda request: mutations.append((request.url, request.method, request.all_headers()))
                 if "/api/" in request.url and request.method not in {"GET", "HEAD", "OPTIONS"} else None)
         try:
-            response = page.goto(f"{base_url}/?demo=1")
+            response = page.goto(f"{base_url}/?demo=1&estate=margaret-ellis&as=Daniel")
             csp = response.headers.get("content-security-policy", "")
             assert "script-src 'self'" in csp and "style-src-attr 'none'" in csp
             page.locator("#access-dialog[open]").wait_for()
@@ -456,7 +456,7 @@ def run_conversation_browser_checks(base_url, executable):
 
         page.route("**/api/agent-task/*", task_route)
         try:
-            page.goto(f"{base_url}/?demo=1")
+            page.goto(f"{base_url}/?demo=1&estate=margaret-ellis&as=Daniel")
             page.get_by_role("button", name="Read Margaret").click()
             page.locator("#dashboard").wait_for(state="visible")
             page.locator(f'[data-account-id="{account["id"]}"]').click()

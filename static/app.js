@@ -5,7 +5,7 @@
   const demo = new URLSearchParams(location.search).get("demo") === "1";
   const demoPath = (path) => demo ? `${path}${path.includes("?") ? "&" : "?"}demo=1` : path;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const state = { estate: null, bucket: "all", currentAccount: null, drawerGeneration: 0, drawerAbort: null, pollTimer: null, previousFocus: null, toastTimer: null, calls: new Map(), callAttempts: new Map(), voice: null, sdk: null, evidence: new Map(), activityGeneration: 0 };
+  const state = { estate: null, bucket: "all", currentAccount: null, drawerGeneration: 0, drawerAbort: null, pollTimer: null, previousFocus: null, toastTimer: null, calls: new Map(), callAttempts: new Map(), voice: null, sdk: null, family: null, actor: new URLSearchParams(location.search).get("as") || "", estateSlug: new URLSearchParams(location.search).get("estate") || "", pronoun: "she", evidence: new Map(), activityGeneration: 0 };
   const buckets = [
     { id: "leaving", title: "Money leaving", description: "Charges to stop or move", icon: "↗" },
     { id: "waiting", title: "Money waiting", description: "Assets to find and claim", icon: "↙" },
@@ -143,6 +143,9 @@
       headers.set("X-Requested-With", "Lastly");
       if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
     }
+    // Which deceased person's estate, and which relative is acting (an attribution label, not a login).
+    if (state.estateSlug) headers.set("X-Lastly-Estate", state.estateSlug);
+    if (state.actor) headers.set("X-Lastly-Actor", state.actor);
     let response;
     try { response = await fetch(path, { ...options, method, credentials: "same-origin", cache: "no-store", redirect: "error", headers }); }
     catch (error) {
@@ -176,12 +179,30 @@
   }
 
   function screen(id) {
-    ["plan-screen", "welcome-screen", "loading-screen", "dashboard"].forEach((name) => { $(name).hidden = name !== id; });
+    ["signin-screen", "plan-screen", "welcome-screen", "loading-screen", "dashboard"].forEach((name) => { $(name).hidden = name !== id; });
     window.scrollTo({ top: 0, behavior: "instant" });
   }
 
+  // Pronouns follow the deceased person ("Remembering him since…", "Charged since he passed").
+  const pronounSkip = ".evidence-card, textarea, input, select, script, style";
+  function applyPronouns(root) {
+    if (state.pronoun !== "he" || !root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    if (root.nodeType === Node.TEXT_NODE) nodes.push(root);
+    nodes.forEach((node) => {
+      if (!node.parentElement || node.parentElement.closest(pronounSkip)) return;
+      const text = node.data.replace(/\bRemembering her\b/g, "Remembering him").replace(/\bShe\b/g, "He").replace(/\bshe\b/g, "he").replace(/\bHer\b/g, "His").replace(/\bher\b/g, "his");
+      if (text !== node.data) node.data = text;
+    });
+  }
+  new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(applyPronouns))).observe(document.body, { childList: true, subtree: true });
+
   function personalize(estate) {
     const persona = estate.persona || {};
+    state.pronoun = persona.pronoun === "he" ? "he" : "she";
+    applyPronouns(document.body);
     const name = persona.name || "Your loved one";
     const first = name.split(" ")[0];
     $("welcome-persona").textContent = `${name}’s information is ready`;
@@ -252,6 +273,8 @@
     $("persona-detail").textContent = [persona.city, persona.date_of_death ? `Remembering her since ${date(persona.date_of_death, { year: undefined })}` : ""].filter(Boolean).join(" · ");
     $("estate-description").textContent = `We found ${number(estate.accounts.length)} accounts in ${first}’s information. Here’s where to begin.`;
     renderSummary();
+    loadProgress();
+    loadFamily();
     renderUrgent();
     renderDiscovery();
     renderTabs();
@@ -259,11 +282,98 @@
     renderCoverage();
   }
 
+  // The deceased person's relatives; the chosen one is credited for changes in Neon.
+  async function loadFamily() {
+    try { state.family = await api("/api/family", {}, false); } catch (_) { return; }
+    const relatives = Array.isArray(state.family.relatives) ? state.family.relatives : [];
+    if (!relatives.length) return;
+    const chosen = relatives.find((person) => person.name.toLowerCase() === state.actor.toLowerCase());
+    state.actor = chosen ? chosen.name : (relatives.find((person) => person.executor) || relatives[0]).name;
+    let picker = $("viewing-as");
+    if (!picker) {
+      const label = element("label", "header-label", "Signed in as");
+      picker = element("select", "viewing-as");
+      picker.id = "viewing-as";
+      label.htmlFor = picker.id;
+      picker.addEventListener("change", () => {
+        state.actor = picker.value;
+        const url = new URL(location.href);
+        url.searchParams.set("as", state.actor);
+        history.replaceState(null, "", url);
+        toast(`You’re now ${state.actor}. Changes you make are recorded under that name.`);
+      });
+      $("lock-estate").before(label, picker);
+    }
+    picker.replaceChildren(...relatives.map((person) => {
+      const option = element("option", "", `${person.name} (${person.relationship})`);
+      option.value = person.name;
+      return option;
+    }));
+    picker.value = state.actor;
+    const executorName = (relatives.find((person) => person.executor) || relatives[0]).name;
+    $("connected-for").textContent = `Connected for ${executorName}`;
+    $("family-avatars").setAttribute("aria-label", `Family members ${relatives.map((person) => person.name).join(" and ")}`);
+    $("family-avatars").replaceChildren(...relatives.slice(0, 3).map((person, index) => element("span", `avatar ${index % 2 ? "avatar-peach" : "avatar-sage"}`, person.name.charAt(0).toUpperCase())));
+    if (!$("switch-person")) {
+      const switcher = button("Switch person", "text-button", () => { location.href = "/"; });
+      switcher.id = "switch-person";
+      $("lock-estate").before(switcher);
+    }
+  }
+
+  // Other relatives' changes arrive through Neon; check every few seconds.
+  async function syncFromFamily() {
+    if (!state.estate || document.hidden || $("dashboard").hidden) return;
+    let fresh;
+    try { fresh = await api("/api/estate", {}, false); } catch (_) { return; }
+    if (!fresh || !Array.isArray(fresh.accounts)) return;
+    const changed = [];
+    fresh.accounts.forEach((account) => {
+      const index = state.estate.accounts.findIndex((item) => item.id === account.id);
+      if (index === -1) return;
+      const old = state.estate.accounts[index];
+      if (old.status !== account.status || (old.assigned_to || "") !== (account.assigned_to || "")) {
+        state.estate.accounts[index] = account;
+        changed.push(account);
+      }
+    });
+    if (!changed.length) return;
+    renderLedger(); renderTabs(); renderUrgent(); loadActivity(); loadProgress();
+    const open = changed.find((account) => account.id === state.currentAccount);
+    if (open) {
+      const status = $("account-status");
+      const assigned = $("account-assignment");
+      if (status) status.value = open.status;
+      if (assigned) assigned.value = open.assigned_to || "";
+    }
+    let who = "Your family";
+    try {
+      const latest = (await api("/api/activity", {}, false)).activity || [];
+      if (latest[0] && latest[0].actor) who = latest[0].actor;
+    } catch (_) { /* Keep the generic name. */ }
+    toast(changed.length === 1 ? `${who} updated ${changed[0].institution}.` : `${who} updated ${changed.length} accounts.`);
+  }
+  setInterval(syncFromFamily, 4000);
+
+  // Live figures from the shared account statuses; every relative's screen agrees.
+  async function loadProgress() {
+    try {
+      state.progress = await api("/api/progress", {}, false);
+      if (state.estate) renderSummary();
+    } catch (_) { /* The analysis totals remain shown. */ }
+  }
+
   function renderSummary() {
     const { totals = {}, stats = {} } = state.estate;
+    const progress = state.progress || {};
+    const stopped = Number(progress.monthly_stopped) > 0;
+    const claims = Array.isArray(progress.claims_in_progress) ? progress.claims_in_progress : [];
+    const claimNote = claims.length ? `${claims.map((claim) => `${claim.amount ? money(claim.amount) + " " : ""}${claim.institution}`).join(", ")} claim in progress` : "Balances, savings & insurance";
     const cards = [
-      { label: "Recurring charges found", value: money(totals.monthly_drain, true), unit: "/ month", note: "Based on recent billing records", icon: "↗", className: "summary-leaving" },
-      { label: "Money waiting to be claimed", value: money(totals.assets_found), note: "Balances, savings & insurance", icon: "↙", className: "summary-assets" },
+      stopped
+        ? { label: "Still charging each month", value: money(progress.monthly_remaining, true), unit: "/ month", note: `${money(progress.monthly_stopped, true)} stopped · ${progress.stopped.join(", ")} (of ${money(progress.monthly_original, true)} found)`, icon: "↘", className: "summary-leaving" }
+        : { label: "Recurring charges found", value: money(totals.monthly_drain, true), unit: "/ month", note: "Based on recent billing records", icon: "↗", className: "summary-leaving" },
+      { label: "Money waiting to be claimed", value: money(totals.assets_found), note: claimNote, icon: "↙", className: "summary-assets" },
       { label: "Outstanding balances", value: money(totals.debts_found), note: "For the estate to review", icon: "≋" },
       { label: "Charged since she passed", value: money(totals.charged_since_death, true), note: "Active accounts still billing", icon: "◷", className: "summary-leaving" }
     ];
@@ -512,7 +622,8 @@
       return { wrapper: append(wrapper, title, select), select };
     };
     const status = makeSelect("account-status", "Progress", Object.entries(statusLabels), account.status);
-    const assignedOptions = [["", "Unassigned"], ["Daniel", "Daniel"], ["Sarah", "Sarah"], ["Me", "Me"]];
+    const relatives = state.family && Array.isArray(state.family.relatives) ? state.family.relatives : [{ name: "Daniel" }, { name: "Sarah" }];
+    const assignedOptions = [["", "Unassigned"], ...relatives.map((person) => [person.name, person.name])];
     if (account.assigned_to && !assignedOptions.some(([value]) => value === account.assigned_to)) assignedOptions.push([account.assigned_to, account.assigned_to]);
     const assigned = makeSelect("account-assignment", "Assign to", assignedOptions, account.assigned_to || "");
     append(form, status.wrapper, assigned.wrapper);
@@ -553,6 +664,7 @@
     renderUrgent();
     renderTabs();
     loadActivity();
+    loadProgress();
     return updated;
   }
 
@@ -703,13 +815,14 @@
     const finished = ["completed", "pending", "rejected", "failed"].includes(task.status);
     if (!finished && waited >= 30) container.append(element("p", "inline-error", "Still waiting for the agents. Check that fetch_agent.py and insurer_agent.py are running."));
     parent.replaceChildren(container);
-    if (task.status === "completed") {
+    const target = task.status === "completed" ? "done" : task.status === "pending" ? "in_progress" : null;
+    if (target) {
       const current = state.estate.accounts.find((item) => item.id === account.id);
-      if (current && current.status !== "done") {
-        current.status = "done";
-        renderLedger(); renderTabs(); loadActivity();
+      if (current && current.status !== "done" && current.status !== target) {
+        current.status = target;
+        renderLedger(); renderTabs(); loadActivity(); loadProgress();
         const select = $("account-status");
-        if (select) select.value = "done";
+        if (select) select.value = target;
       }
     }
     if (finished) return;
@@ -856,6 +969,7 @@
     parent.replaceChildren(container);
     if (claim.status === "opened") {
       const current = state.estate.accounts.find((item) => item.id === account.id);
+      loadProgress();
       if (current && current.status === "open") { current.status = "in_progress"; renderLedger(); renderTabs(); loadActivity(); const select = $("account-status"); if (select) select.value = "in_progress"; }
     }
     if (!waiting || generation !== state.drawerGeneration) return;
@@ -1072,7 +1186,10 @@
     const heading = element("strong", "", titles[status] || "Call in progress");
     if (!["done", "failed", "placed"].includes(status)) heading.prepend(element("span", "pulse-dot"));
     container.replaceChildren(heading);
-    if (summary && typeof summary === "object") {
+    if (summary && typeof summary === "object" && status !== "done" && status !== "failed") {
+      // The transcript is still being finalized; a provisional result is not shown as a verdict.
+      container.append(element("p", "", "Reviewing the conversation. The outcome appears once the transcript is final."));
+    } else if (summary && typeof summary === "object") {
       if (typeof summary.cancelled === "boolean") container.append(element("p", "", summary.cancelled ? "Cancellation confirmed. This account is marked complete." : "The representative did not clearly confirm completed cancellation. If you know it was completed, set Progress to Done above."));
       if (summary.reference_number) container.append(element("p", "reference", `Reference: ${summary.reference_number}`));
       const nextSteps = Array.isArray(summary.next_steps) ? summary.next_steps.join(" ") : summary.next_steps;
@@ -1201,10 +1318,43 @@
     saveBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), "Lastly-family-checklist.txt");
   });
 
-  if (demo) screen("welcome-screen");
-  api("/api/estate").then((estate) => {
-    if (Array.isArray(estate.accounts) && !state.estate) { state.estate = estate; personalize(estate); }
-  }).catch(() => {
-    // A new installation has no estate until the first analysis; the start screen remains usable.
+  async function openEstate() {
+    // Load the person first, so the next screen never shows another family's names.
+    try {
+      const estate = await api("/api/estate");
+      if (Array.isArray(estate.accounts) && !state.estate) { state.estate = estate; personalize(estate); await loadFamily(); }
+    } catch (_) {
+      // A new installation has no estate until the first analysis; the start screen remains usable.
+    }
+    screen(demo ? "welcome-screen" : "plan-screen");
+  }
+
+  // Starting screen: the deceased person's exact full name, then the relative signing in.
+  $("signin-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const deceased = $("signin-deceased").value.trim();
+    const name = $("signin-name").value.trim();
+    const relationship = $("signin-relationship").value.trim();
+    if (!deceased || !name || !relationship) { showError($("signin-error"), "Enter all three: your loved one’s full name, your first name and your relationship."); return; }
+    $("signin-submit").disabled = true;
+    $("signin-error").hidden = true;
+    try {
+      state.estateSlug = "";
+      const identity = await api("/api/identify", { method: "POST", body: JSON.stringify({ deceased, name, relationship }) });
+      if (!identity.found) { showError($("signin-error"), identity.message); return; }
+      state.estateSlug = identity.estate;
+      state.actor = identity.name;
+      const url = new URL(location.href);
+      url.searchParams.set("estate", identity.estate);
+      url.searchParams.set("as", identity.name);
+      history.replaceState(null, "", url);
+      toast(`Welcome, ${identity.name} (${identity.relationship}).`);
+      await openEstate();
+    } catch (error) {
+      showError($("signin-error"), errorMessage(error));
+    } finally { $("signin-submit").disabled = false; }
   });
+
+  if (state.estateSlug) openEstate();
+  else { screen("signin-screen"); $("signin-deceased").focus(); }
 })();

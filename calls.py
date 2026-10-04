@@ -19,8 +19,9 @@ from uuid import UUID
 
 import httpx
 
+import config
 import llm
-from config import DATA_DIR, get_settings
+from config import get_settings
 from secure_storage import StorageError, private_file_lock, read_json, write_json
 
 API_BASE = "https://api.elevenlabs.io/v1/convai"
@@ -45,6 +46,10 @@ If the representative says they can or will cancel, ask them to confirm explicit
 that the subscription has now been cancelled. A reference number alone is not proof
 of completion. Do not assume a generic goodbye confirms cancellation.
 Before finishing, summarize what the company actually confirmed and all remaining steps.
+For a cancellation request, your last question before saying goodbye must be exactly:
+"Just to confirm for the family: has the {{institution}} account been cancelled?"
+Wait for the answer. If they say yes, thank them. If they say no or are unsure, state that
+the request remains pending and repeat any remaining steps.
 When the representative has nothing further, say a brief, respectful goodbye and then end
 the call yourself with the end_call tool. Never end the call before you have repeated any
 reference number and summarized the outcome, unless the representative asks you to hang up.
@@ -92,7 +97,7 @@ def _require_settings(*, outbound: bool = False):
 
 def _metadata_path() -> Path:
     # Takeout runs and tests can switch estate directories after importing config.
-    return Path(os.getenv("LASTLY_DATA_DIR", str(DATA_DIR))) / "runtime_calls.json"
+    return config.data_dir() / "runtime_calls.json"
 
 
 def _load_metadata() -> dict[str, Any]:
@@ -268,7 +273,7 @@ def _dynamic_variables(account: dict[str, Any], persona: dict[str, Any], setting
     return {
         "person_name": name, "date_of_death": death_date, "institution": institution,
         "action": action, "category": str(account.get("category") or "account"),
-        "executor_name": settings.family_executor or "the family representative",
+        "executor_name": str(persona.get("executor") or settings.family_executor or "the family representative"),
     }
 
 
@@ -338,7 +343,7 @@ def place_call(account: dict[str, Any], persona: dict[str, Any], to_number: str)
     dynamic_variables = {
         "person_name": name, "date_of_death": death_date, "institution": institution,
         "action": action, "category": str(account.get("category") or "account"),
-        "executor_name": settings.family_executor or "the family representative",
+        "executor_name": str(persona.get("executor") or settings.family_executor or "the family representative"),
     }
     result = _request("POST", "/twilio/outbound-call", settings, payload={
         "agent_id": settings.elevenlabs_agent_id,
@@ -375,6 +380,10 @@ _BLOCKER = re.compile(
     r"(?:will|can)\s+(?:be\s+)?cancel|pending|once\s+(?:we|you|the)|"
     r"(?:after|until|before)\s+(?:we|you|the)|(?:require|need)\s+(?:a|the|your)\s+death\s+certificate|"
     r"reactivated|reinstated|remains?\s+active|cancellation\s+(?:has\s+)?failed)\b", re.IGNORECASE)
+# The agent's closing question, and short answers to it from the company.
+_CONFIRM_QUESTION = re.compile(r"\b(?:has|have|is|was)\b.{0,80}\bcancel[le]{1,2}d\b[^?]{0,40}\?", re.IGNORECASE)
+_AFFIRM = re.compile(r"^\W*(?:yes|yeah|yea|yep|yup|correct|that'?s right|that is right|confirmed|it has|it is|absolutely|definitely|sure|right|affirmative)\b", re.IGNORECASE)
+_DENY = re.compile(r"^\W*(?:no|nope|not yet|not quite|it hasn'?t|it has not|it isn'?t|negative)\b", re.IGNORECASE)
 _REFERENCE = re.compile(
     r"\b(?:reference|confirmation|case)\s*(?:number|code|id|#)?\s*(?:is|:|#)?\s*([A-Z0-9][A-Z0-9-]{2,40})\b", re.IGNORECASE)
 
@@ -385,17 +394,23 @@ def summarize_transcript(transcript: list[dict[str, Any]], *, completed: bool = 
     reference = None
     next_steps: list[str] = []
     company_turns = []
+    asked_to_confirm = False
     for turn in transcript:
-        if not isinstance(turn, dict) or turn.get("role") != "user":
+        if not isinstance(turn, dict):
             continue
         message = str(turn.get("message") or "").strip()
-        if not message:
+        if turn.get("role") == "agent":
+            # Only the agent's direct closing question makes a short "yes" meaningful.
+            asked_to_confirm = bool(_CONFIRM_QUESTION.search(message)) if message else asked_to_confirm
+            continue
+        if turn.get("role") != "user" or not message:
             continue
         company_turns.append(message)
-        if _BLOCKER.search(message):
+        if _BLOCKER.search(message) or (asked_to_confirm and _DENY.search(message)):
             cancelled = False
-        elif _POSITIVE.search(message):
+        elif _POSITIVE.search(message) or (asked_to_confirm and _AFFIRM.search(message)):
             cancelled = True
+        asked_to_confirm = False
         for match in _REFERENCE.finditer(message):
             candidate = match.group(1).rstrip(".-")
             if any(character.isdigit() for character in candidate):

@@ -28,7 +28,7 @@ Keep the encryption key separately from data backups. Preserve a secure recovery
 
 `manage.py export` produces an encrypted private backup and refuses to overwrite files. Use `manage.py persona` to update an encrypted inbox's name/date and `manage.py import-bank` to copy a statement into encrypted storage; do not edit encryption envelopes by hand. See [storage details](docs/storage-security.md).
 
-Remote PostgreSQL connections enforce `sslmode=verify-full` with system trust roots, checking the server certificate and hostname. A developer can explicitly permit an insecure **loopback-only** database with `LASTLY_ALLOW_INSECURE_DB=true`; it never permits plaintext remote connections. SQL values are parameterized. Neon stores decrypted estate JSON in its managed database, so the local encryption key does not provide end-to-end encryption of cloud records. Use a restricted application database role, keep its credentials private, and configure backups/access controls in Neon when that account is created.
+Remote PostgreSQL connections enforce `sslmode=verify-full` against the Mozilla CA bundle (`certifi`), checking the server certificate and hostname. A developer can explicitly permit an insecure **loopback-only** database with `LASTLY_ALLOW_INSECURE_DB=true`; it never permits plaintext remote connections. SQL values are parameterized. Neon stores decrypted estate JSON in its managed database, so the local encryption key does not provide end-to-end encryption of cloud records. Use a restricted application database role, keep its credentials private, and configure backups/access controls in Neon when that account is created.
 
 ## HTTP and browser protections
 
@@ -43,7 +43,7 @@ For hosted use set `LASTLY_PRODUCTION=true`, an exact `LASTLY_ALLOWED_HOSTS`, an
 
 ## External integrations
 
-The Fetch.ai bridge has a separate random credential limited to estate reads and questions. It cannot edit accounts, obtain raw email/bank proof, generate letters or place calls. Sender/mode headers are accepted only after this credential authenticates. Private access additionally requires `ALLOW_PRIVATE_CLOUD=true` and an exact `FETCH_ALLOWED_SENDERS` allowlist in both bridge and backend. The public agent can answer only about synthetic data.
+The Fetch.ai bridge has a separate random credential limited to estate reads, questions and relaying agent-to-agent insurance claims. It can fetch queued claim requests (name, date of death, institution, claimant) and report an insurer agent's answer; only the configured `CLAIMS_AGENT_ADDRESS` can open or reject a claim, and resolved claims cannot change. It cannot start claims, edit accounts, obtain raw email/bank proof, generate letters or place calls. Sender/mode headers are accepted only after this credential authenticates. Private access additionally requires `ALLOW_PRIVATE_CLOUD=true` and an exact `FETCH_ALLOWED_SENDERS` allowlist in both bridge and backend. The public agent can answer only about synthetic data.
 
 Real mailbox content remains local unless `ALLOW_PRIVATE_CLOUD=true` explicitly authorizes sharing with configured providers. Q&A sends selected accounts and proof rather than the full estate/assignments to Anthropic. Email, questions, transcripts and provider responses are treated as untrusted data; rendered text is escaped, citations are filtered to actual evidence, and generated text never invokes tools or places calls. Prompt injection cannot be completely eliminated, so evidence and draft actions still require human review.
 

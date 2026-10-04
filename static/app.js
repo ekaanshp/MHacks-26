@@ -5,7 +5,7 @@
   const demo = new URLSearchParams(location.search).get("demo") === "1";
   const demoPath = (path) => demo ? `${path}${path.includes("?") ? "&" : "?"}demo=1` : path;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const state = { estate: null, bucket: "all", currentAccount: null, drawerGeneration: 0, drawerAbort: null, pollTimer: null, previousFocus: null, toastTimer: null, calls: new Map(), callAttempts: new Map(), evidence: new Map(), activityGeneration: 0 };
+  const state = { estate: null, bucket: "all", currentAccount: null, drawerGeneration: 0, drawerAbort: null, pollTimer: null, previousFocus: null, toastTimer: null, calls: new Map(), callAttempts: new Map(), voice: null, sdk: null, evidence: new Map(), activityGeneration: 0 };
   const buckets = [
     { id: "leaving", title: "Money leaving", description: "Charges to stop or move", icon: "↗" },
     { id: "waiting", title: "Money waiting", description: "Assets to find and claim", icon: "↙" },
@@ -406,6 +406,11 @@
         if (entry.action === "status:done") action = `completed ${institution}`;
         else if (entry.action === "status:in_progress") action = `started working on ${institution}`;
         else if (entry.action === "status:open") action = `reopened ${institution}`;
+        else if (entry.action === "call:placed") action = `had Lastly call ${institution} (AI phone call)`;
+        else if (entry.action === "claim:requested") action = `asked Lastly's agent to open a claim with ${institution}`;
+        else if (entry.action === "claim:opened") action = `opened a claim for ${institution}`;
+        else if (entry.action === "claim:rejected") action = `could not open a claim for ${institution}`;
+        else if (entry.action === "call:browser") action = `talked with ${institution} (AI conversation)`;
         else if (String(entry.action).startsWith("assigned:")) action = `assigned ${institution} to ${entry.action.slice(9) || "the family"}`;
         else action = `${String(entry.action || "updated").replace(/[_:]/g, " ")} · ${institution}`;
         const actor = entry.actor || "Your family";
@@ -619,10 +624,45 @@
       callButton.hidden = true;
       renderCallForm(callContainer, account, generation);
     });
-    append(controls, letterButton, callButton);
-    append(parent, controls, actionError, letterContainer, callContainer);
-    if (state.calls.has(account.id)) {
+    const talkButton = button("Talk to them here 🎙", "button button-secondary", () => {
+      talkButton.hidden = true;
       callButton.hidden = true;
+      renderVoiceForm(callContainer, account, generation);
+    });
+    append(controls, letterButton, callButton, talkButton);
+    const claimContainer = element("div");
+    if (account.action === "claim") {
+      // Agent-to-agent: Lastly's Fetch.ai agent asks the insurer's agent to open the claim.
+      const claimButton = button("Open a claim via agent ↗", "button button-primary", async () => {
+        claimButton.disabled = true;
+        claimButton.textContent = "Contacting the insurer’s agent…";
+        actionError.hidden = true;
+        try {
+          const claim = await api(`/api/claim/${encodeURIComponent(account.id)}`, { method: "POST" });
+          if (generation !== state.drawerGeneration) return;
+          claimButton.hidden = true;
+          renderClaim(claimContainer, account, claim, generation);
+        } catch (error) {
+          if (generation === state.drawerGeneration && error.name !== "AbortError") showError(actionError, errorMessage(error));
+          claimButton.disabled = false;
+          claimButton.textContent = "Open a claim via agent ↗";
+        }
+      });
+      controls.prepend(claimButton);
+      api(`/api/claim/${encodeURIComponent(account.id)}`, { signal: state.drawerAbort.signal }, false).then((claim) => {
+        if (generation !== state.drawerGeneration || !claim || !claim.status) return;
+        claimButton.hidden = claim.status !== "failed" && claim.status !== "rejected";
+        renderClaim(claimContainer, account, claim, generation);
+      }).catch(() => { /* No claim yet. */ });
+    }
+    append(parent, controls, actionError, claimContainer, letterContainer, callContainer);
+    if (state.voice && state.voice.account.id === account.id) {
+      callButton.hidden = true;
+      talkButton.hidden = true;
+      renderVoiceLive(callContainer, account);
+    } else if (state.calls.has(account.id)) {
+      callButton.hidden = true;
+      talkButton.hidden = true;
       const ongoing = state.calls.get(account.id);
       const callState = renderCallState(callContainer, account, ongoing.status, ongoing.summary);
       if (!["done", "failed"].includes(ongoing.status) && ongoing.conversation_id) pollCall(account, ongoing, callState, generation);
@@ -734,6 +774,167 @@
         if (generation === state.drawerGeneration) { submit.disabled = false; submit.textContent = "Approve & place call ↗"; }
       }
     });
+  }
+
+  function renderClaim(parent, account, claim, generation, waited = 0) {
+    const container = element("div", "call-state claim-state");
+    container.setAttribute("role", "status");
+    container.setAttribute("aria-live", "polite");
+    const waiting = claim.status === "queued" || claim.status === "sent";
+    const titles = { queued: "Lastly’s agent is preparing the claim…", sent: `Waiting for ${account.institution}’s claims agent…`, opened: `Claim opened · ${claim.claim_number || ""}`, rejected: "The insurer’s agent could not open this claim", failed: "The claim could not be delivered" };
+    const heading = element("strong", "", titles[claim.status] || "Claim in progress");
+    if (waiting) heading.prepend(element("span", "pulse-dot"));
+    container.append(heading);
+    if (claim.status === "opened") {
+      container.append(element("p", "", "Agent-to-agent over Fetch.ai: Lastly’s agent sent the policyholder’s details and the insurer’s agent opened the claim."));
+      if (Array.isArray(claim.required_documents) && claim.required_documents.length) {
+        container.append(element("p", "", "Documents the beneficiary still needs to send:"));
+        const list = element("ul", "claim-documents");
+        claim.required_documents.forEach((item) => list.append(element("li", "", item)));
+        container.append(list);
+      }
+      if (claim.message) container.append(element("p", "review-note", claim.message));
+    } else if (claim.message) container.append(element("p", "", claim.message));
+    else if (waiting && waited >= 45) container.append(element("p", "inline-error", "No answer yet. Check that fetch_agent.py and insurer_agent.py are both running."));
+    parent.replaceChildren(container);
+    if (claim.status === "opened") {
+      const current = state.estate.accounts.find((item) => item.id === account.id);
+      if (current && current.status === "open") { current.status = "in_progress"; renderLedger(); renderTabs(); loadActivity(); const select = $("account-status"); if (select) select.value = "in_progress"; }
+    }
+    if (!waiting || generation !== state.drawerGeneration) return;
+    state.pollTimer = setTimeout(async () => {
+      if (generation !== state.drawerGeneration) return;
+      try {
+        const next = await api(`/api/claim/${encodeURIComponent(account.id)}`, { signal: state.drawerAbort.signal }, false);
+        renderClaim(parent, account, next, generation, waited + 2);
+      } catch (error) { if (error.name !== "AbortError") renderClaim(parent, account, claim, generation, waited + 2); }
+    }, 2000);
+  }
+
+  // In-browser ElevenLabs conversation: the laptop's mic and speakers stand in for a phone line.
+  function loadVoiceSdk() {
+    if (window.ElevenLabsClient) return Promise.resolve(window.ElevenLabsClient);
+    if (!state.sdk) {
+      state.sdk = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "/static/vendor/elevenlabs-client.js";
+        script.onload = () => window.ElevenLabsClient ? resolve(window.ElevenLabsClient) : reject(new Error("The voice library did not load."));
+        script.onerror = () => { state.sdk = null; reject(new Error("The voice library could not be loaded. Refresh and try again.")); };
+        document.head.append(script);
+      });
+    }
+    return state.sdk;
+  }
+
+  function renderVoiceForm(parent, account, generation) {
+    const form = element("div", "call-form");
+    const note = element("p", "review-note", `This starts a live voice conversation in your browser with an AI assistant acting on your family’s behalf with ${account.institution}. It will identify itself as an AI. Allow microphone access; whoever plays the company speaks into this computer.`);
+    const error = element("p", "inline-error");
+    error.hidden = true;
+    error.setAttribute("role", "alert");
+    const start = button("Approve & start conversation 🎙", "button button-primary", async () => {
+      if (state.voice) { showError(error, "Another conversation is already in progress. End it first."); return; }
+      start.disabled = true;
+      start.textContent = "Connecting…";
+      error.hidden = true;
+      try {
+        const [session, sdk] = await Promise.all([
+          api(`/api/voice/${encodeURIComponent(account.id)}`, { method: "POST" }, false),
+          loadVoiceSdk(),
+        ]);
+        if (generation !== state.drawerGeneration) return;
+        const voice = { account, conversation: null, mode: "listening", lines: [], finished: false, container: null };
+        state.voice = voice;
+        voice.conversation = await sdk.Conversation.startSession({
+          signedUrl: session.signed_url,
+          connectionType: "websocket",
+          dynamicVariables: session.dynamic_variables,
+          workletPaths: { rawAudioProcessor: "/static/vendor/raw-audio-processor.js", audioConcatProcessor: "/static/vendor/audio-concat-processor.js" },
+          onModeChange: ({ mode }) => { voice.mode = mode; paintVoice(voice); },
+          // Expressive voices emit tone tags such as "[calm]"; they shape speech and are not shown.
+          onMessage: ({ source, message }) => {
+            const text = String(message || "").replace(/\[[a-z][a-z \-]{0,24}\]\s*/gi, "").trim();
+            if (text) { voice.lines.push({ source, message: text }); paintVoice(voice); }
+          },
+          onError: (message) => { voice.error = typeof message === "string" ? message : "The voice connection reported an error."; paintVoice(voice); },
+          onDisconnect: () => finishVoice(voice),
+        });
+        if (generation === state.drawerGeneration) { parent.replaceChildren(); renderVoiceLive(parent, account); }
+      } catch (startError) {
+        if (state.voice && !state.voice.conversation) state.voice = null;
+        if (startError.status === 401) {
+          csrfToken = "";
+          $("lock-estate").hidden = true;
+          try { await unlockEstate(); } catch (_) { /* The family may cancel. */ }
+        }
+        const denied = startError && (startError.name === "NotAllowedError" || /permission/i.test(String(startError.message)));
+        if (generation === state.drawerGeneration) showError(error, denied ? "Microphone access was blocked. Allow it in the browser’s address bar, then try again." : errorMessage(startError));
+      } finally {
+        if (generation === state.drawerGeneration && !(state.voice && state.voice.conversation)) { start.disabled = false; start.textContent = "Approve & start conversation 🎙"; }
+      }
+    });
+    append(form, note, start, error);
+    parent.append(form);
+  }
+
+  function renderVoiceLive(parent, account) {
+    const voice = state.voice;
+    if (!voice) return;
+    const container = element("div", "call-state voice-live");
+    container.setAttribute("role", "status");
+    container.setAttribute("aria-live", "polite");
+    voice.container = container;
+    parent.append(container);
+    paintVoice(voice);
+  }
+
+  function paintVoice(voice) {
+    const container = voice.container;
+    if (!container || !container.isConnected) return;
+    const heading = element("strong", "", voice.mode === "speaking" ? `Lastly is speaking with ${voice.account.institution}` : `Listening to ${voice.account.institution}…`);
+    heading.prepend(element("span", "pulse-dot"));
+    const transcript = element("div", "voice-transcript");
+    voice.lines.slice(-8).forEach((line) => {
+      const row = element("p", line.source === "ai" ? "voice-line voice-ai" : "voice-line");
+      append(row, element("span", "voice-speaker", line.source === "ai" ? "Lastly (AI)" : voice.account.institution), document.createTextNode(line.message));
+      transcript.append(row);
+    });
+    const end = button(voice.ending ? "Ending…" : "End conversation", "button button-secondary voice-end", () => {
+      if (voice.ending || !voice.conversation) return;
+      voice.ending = true;
+      paintVoice(voice);
+      voice.conversation.endSession().catch(() => finishVoice(voice));
+    });
+    end.disabled = Boolean(voice.ending);
+    container.replaceChildren(heading, transcript);
+    if (voice.error) container.append(element("p", "inline-error", voice.error));
+    container.append(end);
+  }
+
+  async function finishVoice(voice) {
+    if (voice.finished) return;
+    voice.finished = true;
+    if (state.voice === voice) state.voice = null;
+    const account = voice.account;
+    const conversationId = voice.conversation && voice.conversation.getId && voice.conversation.getId();
+    const parent = voice.container && voice.container.isConnected ? voice.container.parentElement : null;
+    const generation = state.drawerGeneration;
+    if (!conversationId) {
+      if (parent) parent.replaceChildren(element("p", "inline-error", "The conversation ended before it started. Try again."));
+      return;
+    }
+    try {
+      await api(`/api/voice/${encodeURIComponent(account.id)}/conversation`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }, false);
+      const ongoing = { conversation_id: conversationId, status: "processing", summary: null };
+      state.calls.set(account.id, ongoing);
+      if (!parent || generation !== state.drawerGeneration) { toast(`Your conversation with ${account.institution} ended. Open the account to see the outcome.`); return; }
+      parent.replaceChildren();
+      const callState = renderCallState(parent, account, ongoing.status, null);
+      pollCall(account, ongoing, callState, generation);
+    } catch (error) {
+      if (parent) parent.replaceChildren(element("p", "inline-error", `The conversation ended, but its outcome could not be saved. ${errorMessage(error)}`));
+      else toast(`The conversation outcome could not be saved. ${errorMessage(error)}`);
+    }
   }
 
   function renderCallState(parent, account, status, summary) {
@@ -849,6 +1050,8 @@
   $("lock-estate").addEventListener("click", async () => {
     $("lock-estate").disabled = true;
     try {
+      // Hang up a live voice conversation before locking; it is not left running unseen.
+      if (state.voice && state.voice.conversation) { try { await state.voice.conversation.endSession(); } catch (_) { /* Already ended. */ } }
       await api("/api/session", { method: "DELETE" }, false);
       csrfToken = "";
       state.estate = null;

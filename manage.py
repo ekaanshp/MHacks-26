@@ -1,4 +1,4 @@
-"""Local estate export and synthetic-demo reset utilities."""
+"""Local estate utilities and sponsor integration setup (Neon, ElevenLabs, Fetch.ai)."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ from pathlib import Path
 
 import bank
 import db
+import integrations
 from config import DATA_DIR
 from secure_storage import encryption_enabled, read_json, read_text, write_json, write_text
 
@@ -24,7 +25,31 @@ def main() -> None:
     statement.add_argument("--input", type=Path, required=True)
     statement.add_argument("--replace", action="store_true", help="Explicitly replace a previously imported statement.")
     subcommands.add_parser("reset-progress", help="Reset family edits in the synthetic estate before a rehearsal.")
+    subcommands.add_parser("integrations", help="Check the Neon, ElevenLabs and Fetch.ai configuration and connectivity.")
+    subcommands.add_parser("neon-init", help="Apply schema.sql to the Neon database in DATABASE_URL.")
+    voice = subcommands.add_parser("elevenlabs-setup", help="Create or update the ElevenLabs calling agent; optionally import the Twilio number.")
+    voice.add_argument("--twilio-number", help="E.164 Twilio number to import (uses TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN) and assign.")
+    voice.add_argument("--voice-id", help="ElevenLabs voice ID; choose a calm, clear voice.")
     args = parser.parse_args()
+    if args.command == "integrations":
+        labels = {True: "OK  ", False: "FAIL", None: "OFF "}
+        report = integrations.status_report()
+        for name, ok, message in report:
+            print(f"[{labels[ok]}] {name}: {message}")
+        if any(ok is False for _, ok, _ in report):
+            parser.exit(1)
+        return
+    if args.command in {"neon-init", "elevenlabs-setup"}:
+        try:
+            if args.command == "neon-init":
+                print(integrations.neon_init())
+            else:
+                lines = integrations.elevenlabs_setup(voice_id=args.voice_id, twilio_number=args.twilio_number)
+                print("ElevenLabs agent is configured with the AI disclosure and dynamic variables. Save in .env:")
+                print("\n".join(lines))
+        except integrations.SetupError as exc:
+            parser.exit(1, f"{exc}\n")
+        return
     directory = Path(os.getenv("LASTLY_DATA_DIR", str(DATA_DIR)))
     if args.command == "import-bank":
         if not encryption_enabled():
@@ -67,7 +92,11 @@ def main() -> None:
         parser.exit(1, "Reset is available only for the synthetic demo, so real family progress is preserved.\n")
     for account in estate["accounts"]:
         db.update_account(estate["estate_id"], account["id"], status="open", assigned_to=None)
-    print(f"Reset {len(estate['accounts'])} synthetic accounts to Open and unassigned.")
+    # Clear demo claims too, so the agent-to-agent claim can be shown again.
+    claims_file = directory / "runtime_claims.json"
+    if claims_file.exists():
+        write_json(claims_file, {})
+    print(f"Reset {len(estate['accounts'])} synthetic accounts to Open and unassigned, and cleared demo claims.")
 
 
 if __name__ == "__main__":

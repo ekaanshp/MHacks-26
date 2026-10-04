@@ -4,8 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import statistics
 import threading
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,12 +19,13 @@ from pydantic import ValidationError
 
 import bank
 import calls
+import claims
 import db
 import letters
 import llm
 import pipeline
 from config import DATA_DIR, ROOT, get_settings
-from models import Account, AccountUpdate, CallRequest, Estate, Question
+from models import Account, AccountUpdate, CallRequest, ClaimUpdate, Estate, Question, VoiceConversation
 from secure_storage import ensure_private_directory, read_json, read_text, write_text
 from security import SecurityMiddleware, configuration_error
 
@@ -273,6 +277,106 @@ def place_call(acct_id: str, body: CallRequest, request: Request):
         raise HTTPException(502, "The call outcome could not be saved. Check ElevenLabs before trying again.") from exc
 
 
+def _voice_account(acct_id: str, request: Request) -> tuple[dict, dict]:
+    result = get_estate()
+    account = get_account(result, acct_id)
+    if (result.get("analysis") or {}).get("synthetic") is not True and not get_settings().allow_private_cloud:
+        raise HTTPException(403, "This private estate stays local. Enable ALLOW_PRIVATE_CLOUD to authorize sharing call details with ElevenLabs.")
+    if not account["active"]:
+        raise HTTPException(400, "This account stopped charging. Review it before starting a conversation.")
+    try:
+        calls._require_browser_settings()
+    except calls.IntegrationNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if getattr(request.state, "principal", None) != "family":
+        raise HTTPException(401, "Unlock the estate before starting a conversation.")
+    return result, account
+
+
+@app.post("/api/voice/{acct_id}")
+def start_voice(acct_id: str, request: Request):
+    """Start an in-browser ElevenLabs conversation; no phone number is required."""
+    result, account = _voice_account(acct_id, request)
+    try:
+        return calls.start_browser_session(account, result["persona"])
+    except calls.IntegrationError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/voice/{acct_id}/conversation")
+def finish_voice(acct_id: str, body: VoiceConversation, request: Request):
+    result, account = _voice_account(acct_id, request)
+    try:
+        response = calls.register_browser_conversation(body.conversation_id, account, result["persona"])
+    except calls.IntegrationError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db.log_activity(result["estate_id"], acct_id, get_settings().family_executor, "call:browser")
+    return response
+
+
+@app.post("/api/claim/{acct_id}")
+def start_claim(acct_id: str):
+    """Queue an insurance claim for Lastly's Fetch.ai agent to send to the insurer's agent."""
+    result = get_estate()
+    account = get_account(result, acct_id)
+    if (result.get("analysis") or {}).get("synthetic") is not True and not get_settings().allow_private_cloud:
+        raise HTTPException(403, "This private estate stays local. Enable ALLOW_PRIVATE_CLOUD to share claim details with another agent.")
+    if account["action"] != "claim":
+        raise HTTPException(400, "Only policies the estate can claim can be sent to an insurer's agent.")
+    try:
+        claim = claims.create(account, result["persona"], get_settings().family_executor)
+    except claims.ClaimsNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if claim["status"] == "queued":
+        db.log_activity(result["estate_id"], acct_id, get_settings().family_executor, "claim:requested")
+    return claim
+
+
+@app.get("/api/claim/{acct_id}")
+def claim_status(acct_id: str):
+    result = get_estate()
+    get_account(result, acct_id)
+    # No claim yet is a normal state, not an error.
+    return claims.latest(acct_id, result["persona"]) or {"status": None}
+
+
+def require_agent(request: Request) -> None:
+    if getattr(request.state, "principal", None) != "agent":
+        raise HTTPException(403, "Only Lastly's agent can relay claims.")
+
+
+@app.get("/api/agent/claims")
+def agent_pending_claims(request: Request):
+    require_agent(request)
+    return {"claims": claims.pending()}
+
+
+@app.post("/api/agent/claims/{claim_id}")
+def agent_claim_update(claim_id: str, body: ClaimUpdate, request: Request):
+    require_agent(request)
+    try:
+        claim = claims.update(claim_id, body.status, responder=body.responder, claim_number=body.claim_number,
+                              required_documents=body.required_documents, message=body.message)
+    except KeyError as exc:
+        raise HTTPException(404, "Claim not found.") from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if body.status in {"opened", "rejected"}:
+        estate = db.load_estate()
+        account = next((item for item in (estate or {}).get("accounts", []) if item["id"] == claim["account_id"]), None)
+        if estate and account:
+            if body.status == "opened" and account["status"] == "open":
+                db.update_account(estate["estate_id"], account["id"], status="in_progress")
+            db.log_activity(estate["estate_id"], account["id"], "Insurer agent", f"claim:{body.status}")
+    return claim
+
+
 @app.get("/api/call/{conversation_id}")
 def call_status(conversation_id: str):
     result = get_estate()
@@ -294,6 +398,103 @@ def evidence_text(result: dict, evidence_ids: list[str]) -> list[dict]:
     email_lookup = {item["id"]: item for item in inbox.get("emails", [])}
     bank_lookup = {item["id"]: item for item in bank.read_rows(data_dir() / "bank.csv")}
     return [{key: value for key, value in (email_lookup.get(eid) or bank_lookup.get(eid) or {}).items() if key in {"id", "subject", "from", "body", "date", "description", "amount"}} for eid in evidence_ids[:15]]
+
+
+def offline_answer(result: dict, lower: str, selected: list[dict]) -> dict | None:
+    """Evidence-backed answers to common broad questions when no LLM is configured."""
+    accounts = result["accounts"]
+    if re.search(r"\b(who are you|what (are|can|do) you( do)?|created to do|what is lastly|introduce yourself|help me|how do you work)\b|^\s*(hi|hello|hey)\b", lower):
+        name = result["persona"].get("name") or "the person"
+        insurance = next((account for account in accounts if account["category"] == "insurance"), None)
+        found = f" For {name}, it found {len(accounts)} accounts" + (f", including a ${insurance['amount']:,.0f} {insurance['institution']} life insurance policy" if insurance and insurance["amount"] else "") + "."
+        return {"answer": "I'm Lastly's estate assistant. When someone dies, I help their family find every account they left behind: subscriptions still charging, money waiting to be claimed, agencies to notify, debts and online accounts. "
+                          "I read their email and bank statement and cite the exact email or bank row behind every answer." + found +
+                          "\nTry asking: \"Did Margaret have life insurance?\", \"Which accounts are still charging?\", \"What renews in the next 14 days?\" or \"What are the next steps?\" "
+                          "This public demo uses synthetic data.",
+                "evidence_ids": [insurance["evidence_ids"][0]] if insurance and insurance["evidence_ids"] else []}
+    if any(word in lower for word in ("executor", "attorney", "lawyer", "probate", "estate planning", "next step")):
+        terms = ("executor", "attorney", "probate", "death certificate", "beneficiary")
+        quotes: dict[str, tuple[str, list[str]]] = {}
+        for email in read_inbox().get("emails", []):
+            sentences = [part.strip() for line in str(email.get("body", "")).splitlines() for part in re.split(r"(?<=[.!?])\s+", line)
+                         if any(term in part.casefold() for term in terms)]
+            # One entry per sender: repeated statements say the same thing.
+            if sentences and email.get("from") not in quotes:
+                quotes[email.get("from", "")] = (email["id"], [sentence[:240] for sentence in dict.fromkeys(sentences)])
+        lines = ["No attorney or probate court appears in the connected inbox."]
+        if quotes:
+            lines.append("What the institutions say the executor must do:")
+            lines += [f"- {sender}: " + " ".join(f'"{sentence}"' for sentence in sentences) + f" ({eid})" for sender, (eid, sentences) in list(quotes.items())[:5]]
+        steps = {"claim": "Claim with a certified death certificate", "notify": "Notify of the death",
+                 "transfer": "Transfer or close through the estate", "cancel": "Cancel recurring charges", "memorialize": "Memorialize or close online accounts"}
+        cited: list[str] = [eid for eid, _ in list(quotes.values())[:5]]
+        lines.append("Next steps from the discovered accounts:")
+        for action, label in steps.items():
+            group = [account for account in accounts if account["action"] == action and account["active"] and account["status"] != "done"]
+            if group:
+                lines.append(f"- {label}: " + ", ".join(f"{account['institution']} ({account['evidence_ids'][0]})" for account in group[:8]) + ("…" if len(group) > 8 else ""))
+                cited += [account["evidence_ids"][0] for account in group[:8]]
+        if any(account["category"] in {"pension", "government"} and account["active"] for account in accounts):
+            lines.append("Benefit payments deposited after the date of death may have to be returned, so notify pensions and Social Security first.")
+        return {"answer": "\n".join(lines), "evidence_ids": list(dict.fromkeys(cited))}
+    if any(word in lower for word in ("unusual", "suspicious", "withdrawal", "transaction")):
+        rows = bank.read_rows(data_dir() / "bank.csv")
+        if not rows:
+            return {"answer": "No bank statement is connected, so there are no transactions to review.", "evidence_ids": []}
+        first, last = min(row["date"] for row in rows), max(row["date"] for row in rows)
+        cutoff = (date.fromisoformat(last) - timedelta(days=60)).isoformat()
+        recurring = {eid for account in accounts for eid in account["evidence_ids"] if eid.startswith("bank_")}
+        one_off = [row for row in rows if float(row["amount"]) < 0 and row["id"] not in recurring]
+        withdrawal = re.compile(r"\b(ATM|WITHDRAW\w*|TELLER|TRANSFER|ZELLE|VENMO|CASH APP|WIRE|CHECK|CHEQUE)\b", re.IGNORECASE)
+        withdrawals = [row for row in one_off if withdrawal.search(row["description"])]
+        typical = statistics.median(-float(row["amount"]) for row in one_off) if one_off else 0
+        recent = sorted((row for row in one_off if row["date"] >= cutoff), key=lambda row: float(row["amount"]))
+        flagged = [row for row in one_off if -float(row["amount"]) > 3 * typical]
+        lines = [f"Statement period: {first} to {last}. \"Recent\" means the last 60 days ({cutoff} to {last}). Recurring charges for discovered accounts are excluded."]
+        if withdrawals:
+            lines.append("Withdrawals and transfers on the statement:")
+            lines += [f"- {row['date']} {row['description']}: ${-float(row['amount']):,.2f} ({row['id']})" for row in sorted(withdrawals, key=lambda row: row["date"], reverse=True)[:8]]
+        else:
+            lines.append("There are no ATM, teller, transfer, wire or check withdrawals anywhere on the statement.")
+        if flagged:
+            lines.append(f"Unusually large one-off debits (over 3x the typical ${typical:,.2f} purchase):")
+            lines += [f"- {row['date']} {row['description']}: ${-float(row['amount']):,.2f} ({row['id']})" for row in sorted(flagged, key=lambda row: float(row["amount"]))[:8]]
+        else:
+            lines.append(f"No one-off debit is unusually large: none exceeds 3x the typical ${typical:,.2f} purchase.")
+        if recent:
+            lines.append("Largest recent one-off debits, for reference:")
+            lines += [f"- {row['date']} {row['description']}: ${-float(row['amount']):,.2f} ({row['id']})" for row in recent[:3]]
+        # Row IDs are named for review, but proof links stay limited to account evidence.
+        return {"answer": "\n".join(lines), "evidence_ids": []}
+    if any(word in lower for word in ("income", "expense", "cash flow")):
+        income = [account for account in accounts if account["bucket"] == "notify" and account["amount"] is not None and account["active"]]
+        charges = [account for account in accounts if account["bucket"] == "leaving" and account["active"] and account["amount"] is not None]
+        lines = ["Income (recurring deposits; notify these agencies, payments after death may be reclaimed):"]
+        lines += [f"{account['institution']}: ${account['amount']:,.2f} per month. Evidence: {', '.join(account['evidence_ids'][:1])}." for account in income] or ["None found."]
+        lines.append(f"Expenses: {len(charges)} active recurring charges totalling ${result['totals']['monthly_drain']:,.2f} per month (annual plans averaged).")
+        lines += [f"{account['institution']}: ${account['amount']:,.2f} {'per year' if account['frequency'] == 'annual' else 'per month'}. Evidence: {account['evidence_ids'][0]}." for account in charges]
+        cited = income + charges
+        return {"answer": "\n".join(lines), "evidence_ids": list(dict.fromkeys(account["evidence_ids"][0] for account in cited))}
+    if any(word in lower for word in ("balance", "how much money", "total assets", "worth")):
+        held = [account for account in accounts if account["bucket"] == "waiting" and account["amount"] is not None and account["frequency"] in {"balance", "one_time"}]
+        if "bank" in lower:
+            held = [account for account in held if account["category"] == "bank"] or held
+        if not held:
+            return {"answer": "No stated balances or policy values were found in the inbox or statement.", "evidence_ids": []}
+        lines = [f"{account['institution']}: ${account['amount']:,.2f} ({account['category'].replace('_', ' ')}). Evidence: {', '.join(account['evidence_ids'][:2])}." for account in held]
+        total = sum(account["amount"] for account in held)
+        note = " The bank statement CSV lists transactions, not balances, so balances come from the institutions' emails." if "bank" in lower else ""
+        return {"answer": f"Stated balances total ${total:,.2f}. This is what the records state, not a settlement amount.{note}\n" + "\n".join(lines),
+                "evidence_ids": list(dict.fromkeys(eid for account in held for eid in account["evidence_ids"][:2]))}
+    if not selected and any(word in lower for word in ("discover", "accounts", "everything", "found", "summary", "list")):
+        labels = {"leaving": "Still charging or to cancel", "waiting": "Money waiting to be claimed", "notify": "Must be notified", "owed": "Debts", "legacy": "Digital legacy"}
+        lines = [f"Lastly found {len(accounts)} accounts:"]
+        for bucket, label in labels.items():
+            group = [account for account in accounts if account["bucket"] == bucket]
+            if group:
+                lines.append(f"{label}: " + "; ".join(f"{account['institution']} ({', '.join(account['evidence_ids'][:1])})" for account in group) + ".")
+        return {"answer": "\n".join(lines), "evidence_ids": list(dict.fromkeys(account["evidence_ids"][0] for account in accounts if account["evidence_ids"]))}
+    return None
 
 
 def answer_question(result: dict, question: str, *, use_cloud: bool = True) -> dict:
@@ -327,16 +528,19 @@ def answer_question(result: dict, question: str, *, use_cloud: bool = True) -> d
         citations = list(dict.fromkeys(eid for eid in raw_citations[:30] if isinstance(eid, str) and eid in allowed)) if isinstance(raw_citations, list) else []
         if isinstance(response.get("answer"), str) and len(response["answer"]) <= 12000 and (citations or not selected):
             return {"answer": response["answer"], "evidence_ids": citations}
+    if (special := offline_answer(result, lower, selected)) is not None:
+        return special
     if not selected:
         return {"answer": "I couldn't find evidence for that in the connected inbox or statement. Try asking about a named account, life insurance, subscriptions, or debts. The coverage checklist shows other places to look.", "evidence_ids": []}
     sentences = []
-    for account in selected[:6]:
+    limit = len(selected) if re.search(r"\b(all|every|full|complete|remaining|rest|other)\b", lower) else 8
+    for account in selected[:limit]:
         amount = f" ${account['amount']:,.2f}" if account["amount"] is not None else " (no monetary value stated)"
         cycle = " per month" if account["frequency"] == "monthly" else " per year" if account["frequency"] == "annual" else ""
         state = " It stopped charging; confirm it is closed." if not account["active"] else ""
         sentences.append(f"{account['institution']}: {account['category'].replace('_', ' ')}{amount}{cycle}.{state} Evidence: {', '.join(account['evidence_ids'][:2])}.")
-    if len(selected) > 6:
-        sentences.append(f"There are {len(selected) - 6} more matching accounts in the ledger.")
+    if len(selected) > limit:
+        sentences.append(f"There are {len(selected) - limit} more: " + ", ".join(account["institution"] for account in selected[limit:]) + ". Ask for all of them to see the details.")
     return {"answer": "\n".join(sentences), "evidence_ids": evidence_ids}
 
 

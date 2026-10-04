@@ -66,13 +66,14 @@ local record is not a distributed database.
 
 ## Neon and PostgreSQL
 
-Remote database connections force `sslmode=verify-full`, `sslrootcert=system`, and
-TLS 1.2 or later. URL query parameters cannot disable this verification. This
-authenticates the server certificate and hostname against the operating system's
-trust store; encryption without hostname verification is insufficient. The
-`psycopg[binary]` dependency bundles a modern libpq supporting system certificates.
+Remote database connections force `sslmode=verify-full`, `sslrootcert` set to the
+Mozilla CA bundle shipped by `certifi`, and TLS 1.2 or later. URL query parameters
+cannot disable this verification. This authenticates the server certificate and
+hostname; encryption without hostname verification is insufficient. The bundle is
+used instead of `sslrootcert=system` because the `psycopg[binary]` wheel's libpq
+cannot locate the macOS trust store, which made every verified Neon connection fail.
 See the [PostgreSQL connection documentation](https://www.postgresql.org/docs/18/libpq-connect.html)
-for the `verify-full` and `sslrootcert=system` behavior.
+for the `verify-full` and `sslrootcert` behavior.
 
 `LASTLY_ALLOW_INSECURE_DB=true` is an explicit local development exception. It is
 accepted only when every configured host and address is loopback or an explicit

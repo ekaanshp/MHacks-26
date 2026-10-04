@@ -1,5 +1,7 @@
 import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -521,3 +523,23 @@ def test_private_dataset_never_attempts_neon_without_explicit_opt_in(monkeypatch
     assert len(db.get_activity()) == 1
     assert pending_store(local_database)["pending_patches"] == []
     assert pending_store(local_database)["pending_activity"] == []
+
+
+def test_backend_only_member_ids_never_leave_the_database_layer(local_database):
+    estate_id = db.save_estate(estate())
+    db.log_activity(estate_id, "acct_00", "Sarah", "status:done")
+    store_path = local_database / "family_store.json"
+    store = json.loads(store_path.read_text())
+    # Rows replayed from Neon carry the trigger-assigned member id; it must stay private.
+    store["activity"][-1]["actor_member_id"] = "mem_0123456789abcdef"
+    store_path.write_text(json.dumps(store))
+    rows = db.get_activity(estate_id)
+    assert rows and all("actor_member_id" not in row and "sync_key" not in row for row in rows)
+    assert "mem_" not in json.dumps(rows)
+
+
+def test_schema_links_members_and_offers_readable_views():
+    schema = (Path(db.__file__).parent / "schema.sql").read_text()
+    for statement in ("CREATE TABLE IF NOT EXISTS family_members", "accounts_link_assignee", "activity_link_actor",
+                      "CREATE OR REPLACE VIEW account_overview", "CREATE OR REPLACE VIEW activity_overview"):
+        assert statement in schema

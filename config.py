@@ -26,7 +26,7 @@ def now_date() -> date:
 class Settings:
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
-    llm_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
+    llm_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"))
     offline: bool = field(default_factory=lambda: env_bool("LASTLY_OFFLINE", True))
     allow_private_cloud: bool = field(default_factory=lambda: env_bool("ALLOW_PRIVATE_CLOUD"))
     elevenlabs_api_key: str = field(default_factory=lambda: os.getenv("ELEVENLABS_API_KEY", ""))

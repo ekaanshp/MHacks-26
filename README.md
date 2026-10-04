@@ -45,9 +45,11 @@ Credentials belong in `.env`, which Git ignores. [`.env.example`](.env.example) 
 | Product | Settings | Next step |
 |---|---|---|
 | Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `LASTLY_OFFLINE=false` | Run `python pipeline.py --live` and review live recall and proof |
-| Neon | `DATABASE_URL` with verified TLS | Run the pipeline to initialize the schema and persist the estate |
-| ElevenLabs | API key, agent ID, phone number ID, family access code, approved destinations, `LASTLY_OFFLINE=false` | Import a Twilio number, configure the prompt/variables, then approve a dashboard call |
-| Fetch.ai | `AGENT_SEED`, dedicated `LASTLY_AGENT_TOKEN`, mailbox/port/API URL settings | Use a separate Python 3.12 environment per the setup guide, install `requirements-agent.txt`, run `fetch_agent.py`, and connect Mailbox |
+| Neon | `DATABASE_URL` (paste Neon's string as-is) | `python manage.py neon-init`, then run the pipeline to persist the estate |
+| ElevenLabs | API key, Twilio SID/token, family access code, approved destinations, `LASTLY_OFFLINE=false` | `python manage.py elevenlabs-setup --twilio-number +1...` creates the agent and connects the number; save the printed IDs |
+| Fetch.ai | `AGENT_SEED`, dedicated `LASTLY_AGENT_TOKEN`, mailbox/port/API URL settings | `pip install -r requirements-agent.txt`, run `fetch_agent.py`, and connect Mailbox |
+
+Run `python manage.py integrations` at any time to see which integrations are connected and what is missing.
 
 `LASTLY_OFFLINE=true` disables Anthropic and phone calls. Neon remains independently controlled by `DATABASE_URL`. Registration does not happen until you explicitly run the optional agent. No accounts, real calls, uploads, publications, or Git commits were made during development.
 

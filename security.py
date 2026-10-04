@@ -31,7 +31,7 @@ SESSION_IDLE = 30 * 60
 SESSION_LIFETIME = 8 * 60 * 60
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'none'; "
-    "img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; "
+    "img-src 'self' data:; connect-src 'self' wss://api.elevenlabs.io; font-src 'self'; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 )
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -130,7 +130,7 @@ class SecurityMiddleware:
                 defaults = {
                     "content-security-policy": CSP, "x-content-type-options": "nosniff",
                     "x-frame-options": "DENY", "referrer-policy": "no-referrer",
-                    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+                    "permissions-policy": "camera=(), microphone=(self), geolocation=(), payment=()",
                     "cross-origin-opener-policy": "same-origin", "cross-origin-resource-policy": "same-origin",
                     "cache-control": "no-store", "x-request-id": request_id,
                 }
@@ -177,14 +177,20 @@ class SecurityMiddleware:
         private, owner = self.policy()
         auth_required = private or settings.production or bool(settings.access_token)
         is_api = path == "/api" or path.startswith("/api/")
+
+        def exposure_error() -> tuple[int, str] | None:
+            if private and (not settings.access_token or not os.getenv("LASTLY_DATA_KEY")):
+                return 503, "Private estates require an access code and an encryption key before they can be opened."
+            if not loopback and not auth_required:
+                return 403, "The public sample is available on this computer only."
+            return None
+
         if is_api and (error := configuration_error()):
             return await reject(503, error)
-        if is_api and private and (not settings.access_token or not os.getenv("LASTLY_DATA_KEY")):
-            return await reject(503, "Private estates require an access code and an encryption key before they can be opened.")
         if is_api and (settings.production or not loopback) and not is_secure:
             return await reject(403, "HTTPS is required for remote or production estate access.")
-        if is_api and not loopback and not auth_required:
-            return await reject(403, "The public sample is available on this computer only.")
+        if is_api and (failure := exposure_error()):
+            return await reject(*failure)
         if is_api and not self.consume(("requests", client), 180 if auth_required else 600):
             return await reject(429, "Too many requests. Try again shortly.", **{"Retry-After": "60"})
         if is_api and method in MUTATING and headers.get("x-requested-with") != "Lastly":
@@ -214,6 +220,12 @@ class SecurityMiddleware:
                 if not message.get("more_body", False):
                     break
             body = b"".join(chunks)
+            # An import can finish while the body streams; authorize against the estate as it is now.
+            if (latest := self.policy()) != (private, owner):
+                private, owner = latest
+                auth_required = private or settings.production or bool(settings.access_token)
+                if failure := exposure_error():
+                    return await reject(*failure)
             if body and method in MUTATING and headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
                 return await reject(415, "A JSON request body is required.")
             consumed = False
@@ -262,8 +274,11 @@ class SecurityMiddleware:
         agent_headers = any(name.startswith("x-lastly-agent-") for name in headers)
         if agent_headers and principal != "agent":
             return await reject(403, "Agent identity requires the dedicated agent credential.")
-        if principal == "agent" and (path not in {"/api/estate", "/api/ask"} or method not in {"GET", "POST"} or (path == "/api/estate" and method != "GET") or (path == "/api/ask" and method != "POST")):
-            return await reject(403, "This agent credential has read and question access only.")
+        # The agent may read the estate, ask questions and relay insurer-agent claims; nothing else.
+        agent_routes = {("/api/estate", "GET"), ("/api/ask", "POST"), ("/api/agent/claims", "GET")}
+        relay = method == "POST" and re.fullmatch(r"/api/agent/claims/[a-f0-9]{32}", path) is not None
+        if principal == "agent" and (path, method) not in agent_routes and not relay:
+            return await reject(403, "This agent credential has read, question and claim-relay access only.")
         if path == "/api/session":
             if method == "GET":
                 response = {"authenticated": principal == "family" or not auth_required}
@@ -307,7 +322,7 @@ class SecurityMiddleware:
             return await response(scope, bounded_receive, protected_send)
         if is_api and method in MUTATING:
             operation = path.split("/")[2] if len(path.split("/")) > 2 else "unknown"
-            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3}
+            limits = {"analyze": 4, "ask": 24, "letter": 12, "call": 3, "voice": 12}
             if operation in limits and not self.consume((operation, context), limits[operation]):
                 return await reject(429, "This operation is temporarily rate limited.", **{"Retry-After": "60"})
         scope.setdefault("state", {}).update(principal=principal, request_id=request_id)

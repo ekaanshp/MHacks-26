@@ -7,6 +7,7 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -76,6 +77,27 @@ def test_symlink_directory_cannot_redirect_reads_or_writes(tmp_path):
     with pytest.raises(storage.StorageError):
         storage.write_json(link / "new.json", {})
     assert not (target / "new.json").exists()
+
+
+def test_root_owned_system_links_are_followed(tmp_path):
+    # macOS stores temporary directories under /var, a root-owned link to /private/var.
+    real = tmp_path.resolve()
+    system_links = [Path(part) for part in ("/var", "/tmp") if Path(part).is_symlink() and Path(part).lstat().st_uid == 0]
+    alias = next((link / real.relative_to(link.resolve()) for link in system_links if real.is_relative_to(link.resolve())), None)
+    if alias is None:
+        pytest.skip("No root-owned system link leads to the temporary directory on this platform.")
+    storage.write_json(alias / "nested" / "estate.json", {"ok": True})
+    assert storage.read_json(real / "nested" / "estate.json") == {"ok": True}
+
+
+def test_user_owned_link_beneath_a_system_link_is_still_refused(tmp_path):
+    target = tmp_path / "outside"
+    target.mkdir()
+    link = tmp_path / "private"
+    link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(storage.StorageError):
+        storage.ensure_private_directory(link / "estate")
+    assert not (target / "estate").exists()
 
 
 def test_hard_links_are_rejected_without_changing_the_target(tmp_path):
@@ -341,7 +363,9 @@ def test_neon_url_cannot_disable_certificate_or_hostname_verification(monkeypatc
     monkeypatch.setattr(psycopg, "connect", lambda dsn, **kwargs: observed.update(dsn=dsn, **kwargs))
     db._connection()
     assert observed["sslmode"] == "verify-full"
-    assert observed["sslrootcert"] == "system"
+    import certifi
+
+    assert observed["sslrootcert"] == certifi.where()
     assert observed["ssl_min_protocol_version"] == "TLSv1.2"
     assert observed["gssencmode"] == "disable"
 

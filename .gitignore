@@ -23,3 +23,9 @@ data/demo/*
 *.sqlite*
 *.log
 .DS_Store
+# uAgents local storage, private keys and database dumps
+*_data.json
+*.pem
+*.key
+*.dump
+*backup*.json

@@ -59,11 +59,35 @@ def _require_posix() -> None:
         raise StorageError("Private storage requires a POSIX filesystem with no-follow support.")
 
 
+def _system_resolved(path: Path) -> Path:
+    """Follow only root-owned symlinks, such as macOS /var -> private/var.
+
+    Only root can create those links, so an attacker cannot use them to redirect
+    storage. Any other symlink stays in the path and is refused by the walk.
+    """
+    parts = list(path.parts[1:])
+    current = Path("/")
+    for _ in range(64):
+        if not parts:
+            return current
+        candidate = current / parts[0]
+        try:
+            info = os.lstat(candidate)
+        except FileNotFoundError:
+            return candidate.joinpath(*parts[1:])
+        if stat.S_ISLNK(info.st_mode) and info.st_uid == 0:
+            target = Path(os.path.normpath(current / os.readlink(candidate)))
+            current, parts = Path("/"), list(target.parts[1:]) + parts[1:]
+            continue
+        current, parts = candidate, parts[1:]
+    raise StorageError("Private storage path has too many system links.")
+
+
 @contextmanager
 def _directory(path: Path | str, *, create: bool = False, private: bool = False):
     """Walk directory descriptors so symlink swaps cannot redirect file access."""
     _require_posix()
-    absolute = _absolute(path)
+    absolute = _system_resolved(_absolute(path))
     descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC)
     try:
         for component in absolute.parts[1:]:

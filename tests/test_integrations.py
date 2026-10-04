@@ -269,7 +269,8 @@ def test_optional_real_chat_protocol_contract_without_network(monkeypatch, tmp_p
     finally:
         loop.close()
         asyncio.set_event_loop(None)
-    assert len(agent._signed_message_handlers) == 2
+    # Chat message, chat acknowledgement and the insurer agent's claim response.
+    assert len(agent._signed_message_handlers) == 3
     sent = []
     async def answer(question, sender):
         assert question == "Did Margaret have life insurance?"

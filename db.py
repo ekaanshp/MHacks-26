@@ -25,6 +25,12 @@ UNSET = object()
 _LOCK = threading.RLock()
 _ESTATE_FIELDS = {"estate_id", "persona", "stats", "totals", "today", "accounts"}
 _VALID_STATUSES = {"open", "in_progress", "done"}
+# Backend-only columns: sync bookkeeping and private family member ids.
+_PRIVATE_ACTIVITY = {"sync_key", "actor_member_id"}
+
+
+def _public_activity(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key not in _PRIVATE_ACTIVITY}
 
 
 def _settings():
@@ -183,10 +189,13 @@ def _connection():
             raise ValueError("LASTLY_ALLOW_INSECURE_DB is restricted to explicitly configured local databases.")
         return connect(connection_string, connect_timeout=3, row_factory=dict_row)
     # Caller URL options cannot weaken certificate or hostname verification.
-    # libpq 16+ supports the operating system's trusted CA certificates.
+    # The psycopg wheel's libpq cannot locate the macOS trust store, so verify
+    # against Mozilla's CA bundle (certifi) on every platform.
+    import certifi
+
     return connect(
         connection_string, connect_timeout=3, row_factory=dict_row,
-        sslmode="verify-full", sslrootcert="system", ssl_min_protocol_version="TLSv1.2", gssencmode="disable",
+        sslmode="verify-full", sslrootcert=certifi.where(), ssl_min_protocol_version="TLSv1.2", gssencmode="disable",
     )
 
 
@@ -617,7 +626,7 @@ def log_activity(estate_id: int | None, acct_id: str | None, actor: str, action:
                 "synthetic": (estate.get("analysis") or {}).get("synthetic"),
             })
         _write_store(directory, store)
-        return copy.deepcopy(row)
+        return _public_activity(copy.deepcopy(row))
 
 
 def get_activity(estate_id: int | None = None, limit: int = 20) -> list[dict[str, Any]]:
@@ -636,7 +645,7 @@ def get_activity(estate_id: int | None = None, limit: int = 20) -> list[dict[str
                     (estate_id, limit),
                 ).fetchall()
             _acknowledge_pending(acknowledged)
-            return [{key: value for key, value in dict(row, created_at=row["created_at"].isoformat()).items() if key != "sync_key"} for row in rows]
+            return [_public_activity(dict(row, created_at=row["created_at"].isoformat())) for row in rows]
         except _database_errors():
             _database_unavailable()
     with _local_lock() as directory:
@@ -648,4 +657,4 @@ def get_activity(estate_id: int | None = None, limit: int = 20) -> list[dict[str
         # Log insertion order remains reliable if the machine's wall clock is
         # adjusted. Replayed rows replace their original positions in the store.
         rows.reverse()
-        return [{key: value for key, value in copy.deepcopy(row).items() if key != "sync_key"} for row in rows[:limit]]
+        return [_public_activity(copy.deepcopy(row)) for row in rows[:limit]]

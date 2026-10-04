@@ -125,3 +125,40 @@ def test_demo_letters_and_questions_never_call_anthropic(client, monkeypatch):
     gym = account(client, "Planet Fitness")
     assert client.post(f"/api/letter/{gym['id']}?demo=1").status_code == 200
     assert "MetLife" in client.post("/api/ask?demo=1", json={"question": "Did Margaret have life insurance?"}).json()["answer"]
+
+
+@pytest.mark.parametrize("question,expected,prefix", [
+    ("What estate accounts were discovered from the emails?", "Lastly found", "msg_"),
+    ("Which emails reference the executor or attorney handling the estate?", "executor", "msg_"),
+    ("Show me the total balance across all estate bank accounts.", "Chase", "msg_"),
+    ("Can you summarize all income and expenses?", "Social Security", "msg_"),
+])
+def test_offline_answers_cover_broad_questions_with_real_citations(client, question, expected, prefix):
+    estate = client.get("/api/estate").json()
+    response = client.post("/api/ask", json={"question": question})
+    assert response.status_code == 200
+    payload = response.json()
+    assert expected in payload["answer"]
+    assert payload["evidence_ids"] and all(eid.startswith(("msg_", "bank_")) for eid in payload["evidence_ids"])
+    assert any(eid.startswith(prefix) for eid in payload["evidence_ids"])
+    cited = {eid for account in estate["accounts"] for eid in account["evidence_ids"]}
+    for eid in payload["evidence_ids"]:
+        assert eid in cited or client.get(f"/api/{'email' if eid.startswith('msg_') else 'bank'}/{eid}").status_code == 200
+
+
+def test_unusual_transactions_name_rows_without_exposing_non_account_proof(client):
+    payload = client.post("/api/ask", json={"question": "Were there any unusual transactions, like large withdrawals?"}).json()
+    assert "Statement period:" in payload["answer"] and "last 60 days" in payload["answer"] and "bank_" in payload["answer"]
+    assert "no ATM, teller, transfer" in payload["answer"]
+    assert payload["evidence_ids"] == []
+
+
+def test_list_answers_name_everything_and_expand_on_request(client):
+    estate = client.get("/api/estate").json()
+    charging = [account["institution"] for account in estate["accounts"] if account["bucket"] == "leaving" and account["active"]]
+    short = client.post("/api/ask", json={"question": "Which accounts are still charging?"}).json()["answer"]
+    full = client.post("/api/ask", json={"question": "List all accounts that are still charging."}).json()["answer"]
+    assert all(name in short for name in charging) and all(name in full for name in charging)
+    assert "more:" not in full
+    expenses = client.post("/api/ask", json={"question": "Summarize income and expenses."}).json()["answer"]
+    assert all(name in expenses for name in charging)

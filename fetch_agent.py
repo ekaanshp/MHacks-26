@@ -5,6 +5,7 @@ access to inbox contents, and public agent queries are limited to synthetic data
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -64,7 +65,8 @@ def _format_answer(payload: dict[str, Any]) -> str:
         evidence = [value for value in evidence if isinstance(value, str) and value.startswith(("msg_", "bank_"))]
     else:
         evidence = []
-    if evidence:
+    # Answers that already cite every ID inline do not need a repeated footer.
+    if evidence and not all(item in answer for item in evidence):
         answer += "\nEvidence: " + ", ".join(dict.fromkeys(evidence))
     return answer
 
@@ -104,6 +106,36 @@ async def answer_question(question: str, sender: str = "") -> str:
         return "Lastly's local service is unavailable or access is restricted. Start the server and check the agent configuration."
 
 
+async def _claims_request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0), trust_env=False, follow_redirects=False) as client:
+        response = await client.request(method, f"{_api_url()}{path}", headers=_headers("", private=False), json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+async def relay_pending_claims(send) -> int:
+    """Deliver queued claim requests to the insurer agent; returns how many were sent."""
+    pending = await _claims_request("GET", "/api/agent/claims")
+    sent = 0
+    for item in pending.get("claims", []) if isinstance(pending, dict) else []:
+        try:
+            await send(item)
+            await _claims_request("POST", f"/api/agent/claims/{item['request_id']}", {"status": "sent"})
+            sent += 1
+        except (httpx.HTTPError, KeyError, ValueError):
+            continue
+    return sent
+
+
+async def report_claim_response(sender: str, response) -> None:
+    """Pass the insurer agent's answer back to Lastly; the server checks the sender."""
+    await _claims_request("POST", f"/api/agent/claims/{response.request_id}", {
+        "status": response.status if response.status in {"opened", "rejected"} else "rejected",
+        "responder": sender, "claim_number": response.claim_number,
+        "required_documents": list(response.required_documents)[:8], "message": response.message[:600],
+    })
+
+
 def build_agent():
     """Construct the optional agent only when requested, without changing its identity."""
     settings = get_settings()
@@ -122,10 +154,44 @@ def build_agent():
         )
     except ImportError as exc:
         raise RuntimeError("Install the optional agent packages with pip install -r requirements-agent.txt.") from exc
+    # Python 3.14 no longer creates an implicit event loop, which uAgents expects.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    from agent_claims import ClaimRequest, ClaimResponse, LocalFirstResolver, claims_protocol
+
+    insurer = os.getenv("CLAIMS_AGENT_ADDRESS", "").strip()
+    CLAIM_FIELDS = ("request_id", "policyholder_name", "date_of_death", "institution", "policy_type", "claimant_name")
     agent = Agent(name="Lastly Estate Assistant", seed=settings.agent_seed,
                   port=settings.agent_port, mailbox=settings.agent_mailbox,
-                  publish_agent_details=True)
+                  description=AGENT_DESCRIPTION, publish_agent_details=True, loop=loop,
+                  resolve=LocalFirstResolver({insurer: os.getenv("CLAIMS_AGENT_ENDPOINT", "")}))
     protocol = Protocol(spec=chat_protocol_spec)
+    claims = claims_protocol()
+
+    @agent.on_interval(period=2.0)
+    async def deliver_claims(ctx: Context):
+        if not insurer:
+            return
+
+        async def send(item):
+            await ctx.send(item["insurer"], ClaimRequest(**{key: item[key] for key in CLAIM_FIELDS}))
+            ctx.logger.info(f"Sent claim {item['request_id'][:8]} to the insurer agent")
+
+        try:
+            await relay_pending_claims(send)
+        except (httpx.HTTPError, ValueError):
+            pass  # The Lastly API may not be running yet; retry on the next interval.
+
+    @claims.on_message(ClaimResponse)
+    async def handle_claim_response(ctx: Context, sender: str, response: ClaimResponse):
+        if sender != insurer:
+            ctx.logger.warning("Ignored a claim response from an unknown agent")
+            return
+        try:
+            await report_claim_response(sender, response)
+            ctx.logger.info(f"Insurer agent {response.status} claim {response.claim_number or ''}")
+        except (httpx.HTTPError, ValueError):
+            ctx.logger.warning("The claim answer could not be saved in Lastly")
 
     @protocol.on_message(ChatMessage)
     async def handle_message(ctx: Context, sender: str, message: ChatMessage):
@@ -142,6 +208,7 @@ def build_agent():
         return None
 
     agent.include(protocol, publish_manifest=True)
+    agent.include(claims, publish_manifest=True)
     return agent
 
 

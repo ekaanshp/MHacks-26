@@ -1,3 +1,3 @@
-# Optional: verified with base requirements on Python 3.12.
+# Optional Fetch.ai bridge. Verified with base requirements on Python 3.12 and 3.14.
 uagents==0.26.0
 uagents-core==0.4.11

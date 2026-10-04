@@ -100,3 +100,25 @@ class Question(BaseModel):
 class CallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     to_number: str = Field(min_length=9, max_length=16, pattern=r"^\+[1-9][0-9]{7,14}$")
+
+
+class VoiceConversation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversation_id: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class ClaimUpdate(BaseModel):
+    """A report from Lastly's agent about one relayed claim."""
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["sent", "opened", "rejected", "failed"]
+    responder: str = Field(default="", max_length=120)
+    claim_number: str | None = Field(default=None, max_length=40, pattern=r"^[A-Z0-9][A-Z0-9-]{2,39}$")
+    required_documents: list[str] = Field(default_factory=list, max_length=8)
+    message: str = Field(default="", max_length=600)
+
+    @field_validator("required_documents")
+    @classmethod
+    def short_documents(cls, value: list[str]) -> list[str]:
+        if any(not isinstance(item, str) or not item.strip() or len(item) > 200 for item in value):
+            raise ValueError("Each required document must be 1-200 characters.")
+        return [item.strip() for item in value]

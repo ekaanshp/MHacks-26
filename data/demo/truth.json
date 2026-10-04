@@ -1,0 +1,357 @@
+{
+  "today": "2026-10-03",
+  "baseline_accounts": 22,
+  "expected_accounts": 28,
+  "accounts": [
+    {
+      "institution": "Netflix",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 15.49,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Spotify",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 11.99,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Amazon Prime",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 139.0,
+      "frequency": "annual",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Planet Fitness",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 24.99,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "iCloud+",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 2.99,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "The New York Times",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 17.0,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Audible",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 14.95,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Dropbox",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 119.88,
+      "frequency": "annual",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "DTE Energy",
+      "category": "utility",
+      "action": "transfer",
+      "amount": 86.4,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Xfinity",
+      "category": "utility",
+      "action": "cancel",
+      "amount": 74.99,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "AT&T",
+      "category": "utility",
+      "action": "cancel",
+      "amount": 65.0,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Chase Checking",
+      "category": "bank",
+      "action": "transfer",
+      "amount": 8452.31,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Chase Credit Card",
+      "category": "debt",
+      "action": "notify",
+      "amount": 2314.87,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Fidelity",
+      "category": "investment",
+      "action": "transfer",
+      "amount": 67240.18,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Vanguard",
+      "category": "investment",
+      "action": "transfer",
+      "amount": 31220.09,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "MPSERS",
+      "category": "pension",
+      "action": "notify",
+      "amount": 1928.44,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Social Security",
+      "category": "government",
+      "action": "notify",
+      "amount": 1684.6,
+      "frequency": "monthly",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "MetLife",
+      "category": "insurance",
+      "action": "claim",
+      "amount": 50000.0,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Coinbase",
+      "category": "crypto",
+      "action": "transfer",
+      "amount": 2486.2,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "PayPal",
+      "category": "payment_app",
+      "action": "transfer",
+      "amount": 183.42,
+      "frequency": "balance",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Facebook",
+      "category": "digital_legacy",
+      "action": "memorialize",
+      "amount": null,
+      "frequency": "none",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Gmail",
+      "category": "digital_legacy",
+      "action": "memorialize",
+      "amount": null,
+      "frequency": "none",
+      "baseline": true,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Calm",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 14.99,
+      "frequency": "monthly",
+      "baseline": false,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Paramount+",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 7.99,
+      "frequency": "monthly",
+      "baseline": false,
+      "sources": [
+        "email",
+        "bank"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Hulu",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 7.99,
+      "frequency": "monthly",
+      "baseline": false,
+      "sources": [
+        "email"
+      ],
+      "active": false
+    },
+    {
+      "institution": "Delta SkyMiles",
+      "category": "digital_legacy",
+      "action": "notify",
+      "amount": null,
+      "frequency": "none",
+      "baseline": false,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Peacock",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 7.99,
+      "frequency": "monthly",
+      "baseline": false,
+      "sources": [
+        "email"
+      ],
+      "active": true
+    },
+    {
+      "institution": "Ypsi Yoga Collective",
+      "category": "subscription",
+      "action": "cancel",
+      "amount": 45.0,
+      "frequency": "monthly",
+      "baseline": false,
+      "sources": [
+        "bank"
+      ],
+      "active": true
+    }
+  ]
+}

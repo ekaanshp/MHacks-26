@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f4ee">
+  <meta name="description" content="Lastly helps families find accounts, understand what needs attention, and take the next step together.">
+  <title>Lastly — A little clarity for your family</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f7f5ef'/%3E%3Ctext x='16' y='25' font-size='29' text-anchor='middle' fill='%2362775f'%3E%E2%9C%B3%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header" id="site-header">
+    <a class="brand" href="/" aria-label="Lastly home"><span class="brand-mark" aria-hidden="true">✳</span><span>Lastly<span class="brand-period">.</span></span></a>
+    <div class="header-family"><span class="header-label">A place for your family</span><div class="avatar-stack" aria-label="Family members Daniel and Sarah"><span class="avatar avatar-sage">D</span><span class="avatar avatar-peach">S</span></div><button class="text-button" id="lock-estate" type="button" hidden>Lock estate</button></div>
+  </header>
+  <main id="main" tabindex="-1">
+    <section class="onboarding" id="plan-screen" aria-labelledby="plan-title">
+      <div class="eyebrow"><span class="tiny-star" aria-hidden="true">✳</span> A thoughtful start</div>
+      <h1 id="plan-title">How Margaret’s inbox<br>was connected</h1>
+      <p class="onboarding-intro">A little planning makes a difficult time a little easier.<br>Here’s how her family can begin.</p>
+      <div class="connection-options">
+        <article class="connection-card selected"><span class="option-icon" aria-hidden="true">♡</span><span class="selected-check" aria-hidden="true">✓</span><h2>She set up Lastly<br>in advance</h2><p>Margaret chose to share her account information with her family when the time came.</p><span class="option-tag">Connected for Daniel</span></article>
+        <article class="connection-card"><span class="option-icon" aria-hidden="true">✉</span><h2>Connect Gmail<br>or Outlook</h2><p>With authorized access, connect an inbox to find the accounts that need your attention.</p><span class="option-tag muted-tag">Coming soon</span></article>
+        <article class="connection-card"><span class="option-icon" aria-hidden="true">↥</span><h2>Upload a Google<br>Takeout export</h2><p>Use a downloaded copy of an inbox. A local import is available in the setup guide.</p><span class="option-tag muted-tag">Upload coming soon</span></article>
+      </div>
+      <button class="button button-primary" id="continue-button">Continue to Margaret’s estate <span aria-hidden="true">→</span></button>
+      <p class="quiet-note">For the family, with care. Every next step stays in your hands.</p>
+    </section>
+    <section class="onboarding welcome" id="welcome-screen" aria-labelledby="welcome-title" hidden>
+      <div class="persona-monogram" aria-hidden="true">M<span>✳</span></div>
+      <div class="eyebrow">Margaret’s family hub</div>
+      <h1 id="welcome-title">You don’t have to figure<br>it all out at once.</h1>
+      <p class="onboarding-intro">We’ll read Margaret’s inbox and bank statement, find her accounts,<br>and help your family see what needs attention.</p>
+      <div class="welcome-source"><span class="source-check" aria-hidden="true">✓</span><div><strong id="welcome-persona">Margaret’s information is ready</strong><span>Email and Chase bank statement · Authorized by her family</span></div></div>
+      <button class="button button-primary" id="analyze-button">Read Margaret’s inbox <span aria-hidden="true">→</span></button>
+      <p class="inline-error" id="analyze-error" role="alert" hidden></p>
+      <p class="quiet-note">Letters are yours to review. Calls only happen when you approve them.</p>
+      <button class="text-button" id="back-plan-button">← How her inbox was connected</button>
+    </section>
+    <section class="onboarding analysis-screen" id="loading-screen" aria-labelledby="loading-title" hidden>
+      <div class="analysis-orbit" aria-hidden="true"><span>✳</span></div>
+      <div class="eyebrow">Making sense of the details</div>
+      <h1 id="loading-title">Finding the things<br>that matter.</h1>
+      <p class="onboarding-intro" id="analysis-message" role="status" aria-live="polite">Reading the inbox and bank statement…</p>
+      <progress class="analysis-progress" id="progress-fill" value="0" max="100" aria-label="Inbox analysis progress"></progress>
+      <div class="analysis-steps" aria-hidden="true"><span class="active">Read</span><span>Find</span><span>Bring together</span></div>
+      <div class="analysis-counts"><div><strong id="email-counter">—</strong><span>emails reviewed</span></div><div><strong id="account-counter">—</strong><span>accounts found</span></div><div><strong id="sender-counter">—</strong><span>senders considered</span></div></div>
+      <p class="quiet-note">Every finding has an email or statement behind it.</p>
+    </section>
+    <section class="dashboard" id="dashboard" aria-labelledby="dashboard-title" hidden>
+      <div class="dashboard-topline"><span class="eyebrow" id="estate-eyebrow">Margaret’s family hub</span><span class="as-of" id="as-of"></span></div>
+      <div class="dashboard-heading"><div><h1 id="dashboard-title">A little clarity,<br><em>one step at a time.</em></h1><p id="estate-description">Here’s what we found, and how your family can move forward.</p></div><div class="estate-person"><span class="avatar avatar-large" id="persona-avatar" aria-hidden="true">M</span><div><strong id="persona-name"></strong><span id="persona-detail"></span></div></div></div>
+      <div class="summary-grid" id="summary-grid"></div>
+      <div class="estate-facts" id="estate-facts"></div>
+      <div class="urgent-alert" id="urgent-alert" hidden></div>
+      <section class="discovery-card" id="discovery-card" aria-labelledby="discovery-heading" hidden></section>
+      <section class="accounts-section" aria-labelledby="accounts-title">
+        <div class="section-title-row"><div><span class="eyebrow">A shared next step</span><h2 id="accounts-title">Her accounts, together.</h2></div><div class="account-count" id="account-count"></div></div>
+        <div class="account-tabs" id="account-tabs" role="group" aria-label="Filter accounts"></div>
+        <div id="ledger"></div>
+      </section>
+      <section class="ask-section" aria-labelledby="ask-title"><div class="ask-intro"><span class="ask-symbol" aria-hidden="true">✳</span><div><h2 id="ask-title">A question on your mind?</h2><p>Ask about her accounts. We’ll show you what supports the answer.</p></div></div><form id="ask-form"><label for="ask-input" class="sr-only">Your question about the estate</label><input id="ask-input" name="question" placeholder="Did Margaret have life insurance?" maxlength="1500" required><button class="button button-primary" id="ask-button" type="submit">Ask Lastly <span aria-hidden="true">↗</span></button></form><div id="ask-result" aria-live="polite" hidden></div></section>
+      <div class="lower-grid"><section class="coverage-section" aria-labelledby="coverage-title"><span class="eyebrow">The whole picture</span><h2 id="coverage-title">Where else to look</h2><p>An inbox tells part of the story. These places can help you find the rest.</p><ul class="coverage-list" id="coverage-list"></ul><button class="text-button checklist-download" type="button">Save the family checklist <span aria-hidden="true">↓</span></button></section><section class="activity-section" aria-labelledby="activity-title"><div class="activity-heading"><div><span class="eyebrow">Moving forward together</span><h2 id="activity-title">Family activity</h2></div><button class="icon-button" id="refresh-activity" aria-label="Refresh family activity">↻</button></div><div id="activity-list" aria-live="polite"></div><p class="family-footnote">Every completed task is one less thing for your family to carry.</p></section></div>
+      <footer class="dashboard-footer"><span class="brand footer-brand"><span class="brand-mark" aria-hidden="true">✳</span>Lastly.</span><p>A little clarity in a difficult time.</p><span>For legal questions, ask a probate lawyer.</span></footer>
+    </section>
+  </main>
+  <div class="drawer-shell" id="drawer-shell" hidden>
+    <div class="drawer-backdrop" id="drawer-backdrop"></div>
+    <section class="drawer" id="account-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"><button class="icon-button drawer-close" id="drawer-close" aria-label="Close account details">×</button><div id="drawer-content"></div></section>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog class="access-dialog" id="access-dialog" aria-labelledby="access-title" aria-describedby="access-description">
+    <form id="access-form">
+      <h2 id="access-title">Open your family’s estate</h2>
+      <p id="access-description">Enter the family access code to continue.</p>
+      <label class="field-label" for="access-code">Family access code</label>
+      <input id="access-code" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" maxlength="512" required>
+      <p class="inline-error" id="access-error" role="alert" hidden></p>
+      <div class="access-actions"><button class="text-button" id="access-cancel" type="button">Cancel</button><button class="button button-primary" id="access-submit" type="submit">Unlock estate</button></div>
+    </form>
+  </dialog>
+  <noscript><p class="noscript-message">Please enable JavaScript to read the estate and manage your family’s accounts.</p></noscript>
+</body>
+</html>

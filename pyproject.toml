@@ -1,0 +1,16 @@
+[project]
+name = "lastly"
+version = "1.0.0"
+description = "Evidence-backed account discovery for a family estate"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
